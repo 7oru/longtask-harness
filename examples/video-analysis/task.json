@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "video-analysis-example",
+  "title": "Analyze and clip a long video",
+  "domain": "video-analysis",
+  "objective": "Analyze a long video, identify key moments, and produce a clip plan.",
+  "successCriteria": [
+    "A transcript or scene index exists.",
+    "Candidate clips include timestamps and rationale.",
+    "The final edit plan references source evidence."
+  ],
+  "constraints": [
+    "Keep generated media artifacts under artifacts/.",
+    "Do not delete source media."
+  ],
+  "workerPolicy": {
+    "preferred": "openclaw-direct-model",
+    "allowed": ["openclaw-direct-model", "manual-review"]
+  },
+  "createdAt": "2026-05-08T00:00:00.000Z"
+}
+

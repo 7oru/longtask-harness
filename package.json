@@ -1,0 +1,29 @@
+{
+  "name": "longtask-harness",
+  "version": "0.1.0",
+  "description": "A checkpoint-first harness for long-running AI tasks across coding, research, and media workflows.",
+  "type": "module",
+  "bin": {
+    "lth": "./src/cli.js",
+    "longtask-harness": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node src/cli.js validate examples/coding && node src/cli.js validate examples/video-analysis",
+    "demo:next": "node src/cli.js next examples/coding"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "harness",
+    "checkpoint",
+    "long-running-tasks",
+    "coding-agent",
+    "openclaw",
+    "codex"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
+

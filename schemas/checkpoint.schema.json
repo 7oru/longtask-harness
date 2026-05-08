@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Longtask checkpoint",
+  "type": "object",
+  "required": ["schemaVersion", "taskId", "status", "nextStep", "updatedAt"],
+  "properties": {
+    "schemaVersion": { "type": "integer" },
+    "taskId": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["active", "paused", "blocked", "done"]
+    },
+    "currentPhase": { "type": "string" },
+    "nextStep": { "type": "string" },
+    "blockedUntil": {
+      "anyOf": [{ "type": "string" }, { "type": "null" }]
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "updatedAt": { "type": "string" }
+  }
+}
+

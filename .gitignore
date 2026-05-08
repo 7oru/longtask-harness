@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+dist/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+
+# Local run outputs can be large and machine-specific.
+tasks/*/artifacts/
+tasks/*/evidence/
+tasks/*/runs/
+

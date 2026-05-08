@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "coding-example",
+  "title": "Refactor a small CLI safely",
+  "domain": "coding",
+  "objective": "Refactor a CLI in small resumable slices while preserving behavior.",
+  "successCriteria": [
+    "The CLI test suite passes.",
+    "Every behavior change has a run log entry.",
+    "The checkpoint clearly names the next slice."
+  ],
+  "constraints": [
+    "Do not start Codex inside ~/.openclaw.",
+    "Do not retry aggressively after rate limits."
+  ],
+  "workerPolicy": {
+    "preferred": "openclaw-codex-cli",
+    "allowed": ["openclaw-direct-model", "openclaw-codex-cli"]
+  },
+  "createdAt": "2026-05-08T00:00:00.000Z"
+}
+
