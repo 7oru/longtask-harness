@@ -23,7 +23,7 @@
           "properties": {
             "type": {
               "type": "string",
-              "enum": ["rate_limit", "auth_error", "external", "manual", "unknown"]
+              "enum": ["rate_limit", "auth_error", "test_failure", "missing_context", "external", "manual", "unknown"]
             },
             "source": {
               "type": "string",

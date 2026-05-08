@@ -209,6 +209,89 @@ check("expired blockedUntil reopens the task", () => withTask((taskDir) => {
   assert.ok(types.includes("worker_prompt_generated"));
 }));
 
+check("classify detects rate limits with retry timing", () => withTask((taskDir) => {
+  const result = run([
+    "classify",
+    taskDir,
+    "--text", "Codex CLI returned 429 Too Many Requests. Retry after 120 seconds.",
+    "--exit-code", "1"
+  ], { json: true });
+
+  assert.equal(result.class, "rate_limit");
+  assert.equal(result.source, "codex-cli");
+  assert.equal(result.statusSuggestion, "blocked");
+  assert.equal(result.retryAfterSeconds, 120);
+  assert.ok(result.blockedUntil);
+}));
+
+check("classify --record updates checkpoint and run events", () => withTask((taskDir) => {
+  run([
+    "classify",
+    taskDir,
+    "--text", "OpenClaw Minimax quota exceeded. Try again in 1 minute.",
+    "--record"
+  ], { json: true });
+
+  const checkpoint = readCheckpoint(taskDir);
+  const types = runEvents(taskDir).map((event) => event.type);
+
+  assert.equal(checkpoint.status, "blocked");
+  assert.equal(checkpoint.blocker.type, "rate_limit");
+  assert.equal(checkpoint.blocker.source, "openclaw-provider");
+  assert.ok(checkpoint.blockedUntil);
+  assert.ok(types.includes("rate_limited"));
+  assert.ok(types.includes("checkpoint_written"));
+}));
+
+check("classify routes auth and missing context to needs-human", () => withTask((taskDir) => {
+  const auth = run([
+    "classify",
+    taskDir,
+    "--text", "401 unauthorized: invalid API key"
+  ], { json: true });
+  const missing = run([
+    "classify",
+    taskDir,
+    "--text", "ENOENT: file not found, cannot find repo path"
+  ], { json: true });
+
+  assert.equal(auth.class, "auth_error");
+  assert.equal(auth.statusSuggestion, "needs-human");
+  assert.equal(missing.class, "missing_context");
+  assert.equal(missing.statusSuggestion, "needs-human");
+}));
+
+check("classify routes test failures to paused", () => withTask((taskDir) => {
+  const result = run([
+    "classify",
+    taskDir,
+    "--text", "AssertionError: expected true received false. tests failed."
+  ], { json: true });
+
+  assert.equal(result.class, "test_failure");
+  assert.equal(result.statusSuggestion, "paused");
+}));
+
+check("health returns adapter checks without failing smoke suite", () => {
+  const health = run(["health", "examples/coding"], { json: true });
+  const names = health.checks.map((check) => check.name);
+
+  assert.ok(["pass", "warn", "fail"].includes(health.status));
+  assert.ok(names.includes("task-contract"));
+  assert.ok(names.includes("run-decision"));
+  assert.ok(names.includes("openclaw-cli"));
+  assert.ok(names.includes("codex-cli"));
+});
+
+check("openclaw-recipe emits a cron command", () => {
+  const recipe = run(["openclaw-recipe", "examples/coding", "--every", "30m"], { json: true });
+
+  assert.equal(recipe.taskId, "coding-example");
+  assert.match(recipe.command, /openclaw cron add/);
+  assert.match(recipe.command, /lth|src\/cli\.js|node/);
+  assert.match(recipe.message, /tick/);
+});
+
 check("init output validates", () => {
   const dir = mkdtempSync(join(tmpdir(), "longtask-harness-init-"));
   const taskDir = join(dir, "new-task");

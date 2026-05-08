@@ -44,6 +44,7 @@ Important event types:
 - `run_skipped`: task was not runnable, usually because `blockedUntil` is still in the future.
 - `worker_prompt_generated`: the harness produced the bounded worker prompt for the next slice.
 - `progress_recorded`: a human or worker updated task progress.
+- `failure_classified`: worker output was classified as an auth error, test failure, missing context, or unknown failure.
 - `rate_limited`: a worker or adapter hit a rate limit.
 - `checkpoint_written`: the harness or worker persisted resumable state.
 - `handoff_written`: a human-readable handoff note was written.

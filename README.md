@@ -138,6 +138,25 @@ node src/cli.js record tasks/my-coding-task \
   --note "Codex CLI rate limited while adding parser tests; resume from the same slice."
 ```
 
+Classify captured worker output:
+
+```bash
+node src/cli.js classify tasks/my-coding-task \
+  --text "Codex CLI returned 429 Too Many Requests. Retry after 120 seconds."
+```
+
+Run adapter health checks:
+
+```bash
+node src/cli.js health tasks/my-coding-task
+```
+
+Generate an OpenClaw cron recipe:
+
+```bash
+node src/cli.js openclaw-recipe tasks/my-coding-task --every 30m
+```
+
 ## Testing Workflow
 
 Run the full smoke suite before committing:
@@ -156,6 +175,10 @@ The smoke suite copies example tasks into temporary directories and verifies bot
 - blocked tasks without `blockedUntil` become `needs-human`
 - explicit `needs-human` status stops automation
 - expired `blockedUntil` reopens the task and clears the blocker
+- `classify` detects rate limits, auth errors, test failures, and missing context
+- `classify --record` updates checkpoint state and run events
+- `health` reports adapter readiness without making local CLI tools mandatory for tests
+- `openclaw-recipe` emits a cron command
 - fresh `init` output validates and can be dry-run ticked
 
 Testing rules:
@@ -290,6 +313,25 @@ node src/cli.js record tasks/my-coding-task \
   --note "Codex CLI rate limited while adding parser tests; resume from the same slice."
 ```
 
+分类捕获到的 worker 输出：
+
+```bash
+node src/cli.js classify tasks/my-coding-task \
+  --text "Codex CLI returned 429 Too Many Requests. Retry after 120 seconds."
+```
+
+运行 adapter health checks：
+
+```bash
+node src/cli.js health tasks/my-coding-task
+```
+
+生成 OpenClaw cron recipe：
+
+```bash
+node src/cli.js openclaw-recipe tasks/my-coding-task --every 30m
+```
+
 ## 测试流程
 
 提交前运行完整 smoke suite：
@@ -308,6 +350,10 @@ smoke suite 会把 example task 复制到临时目录里测试，覆盖 happy pa
 - 没有 `blockedUntil` 的 blocked task 会进入 `needs-human`。
 - 显式 `needs-human` 状态会停止自动化。
 - 已过期的 `blockedUntil` 会重新打开任务并清空 blocker。
+- `classify` 会识别 rate limit、auth error、test failure 和 missing context。
+- `classify --record` 会更新 checkpoint state 和 run events。
+- `health` 会报告 adapter readiness，但测试不会强制本机必须安装所有 CLI。
+- `openclaw-recipe` 会生成 cron command。
 - 新 `init` 出来的任务可以 validate，也可以 dry-run tick。
 
 测试规则：

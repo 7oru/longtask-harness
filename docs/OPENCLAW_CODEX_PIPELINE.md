@@ -31,15 +31,10 @@ openclaw cron add \
 Once `lth tick` is used as the scheduler entry point, the cron message can stay much smaller because the task directory owns the run decision:
 
 ```bash
-openclaw cron add \
-  --name "longtask-tick" \
-  --every 30m \
-  --session isolated \
-  --session-key agent:main:cron:longtask \
-  --tools "exec read write" \
-  --timeout-seconds 300 \
-  --message "Run lth tick for the configured task directory. If it returns wait, stop. If it returns run, start exactly one bounded worker slice using the generated prompt."
+node src/cli.js openclaw-recipe tasks/my-coding-task --every 30m
 ```
+
+The recipe generator emits the `openclaw cron add` command and the bounded scheduler message. Run `node src/cli.js health <task-dir>` before installing the recipe to check task validity, run decision, OpenClaw availability, Codex CLI availability, and optional repo context.
 
 ## Worker Contract
 
@@ -49,6 +44,7 @@ A worker must:
 - Respect `blockedUntil`.
 - Avoid dense retries after rate limits.
 - Classify whether the rate limit came from `openclaw-provider`, `codex-cli`, `scheduler`, or an external API.
+- Use `lth classify` on captured output when a worker exits unexpectedly.
 - Produce evidence for claims.
 - Update the checkpoint before exit.
 - Leave enough context for a different worker to resume.

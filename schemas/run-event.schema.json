@@ -13,6 +13,7 @@
         "worker_started",
         "worker_completed",
         "worker_failed",
+        "failure_classified",
         "progress_recorded",
         "rate_limited",
         "checkpoint_written",

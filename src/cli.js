@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 
 const VERSION = "0.2.0";
@@ -17,6 +18,9 @@ function main(argv) {
   if (cmd === "next") return printNext(taskDir);
   if (cmd === "tick") return tick(taskDir, parseArgs(rest));
   if (cmd === "record") return recordProgress(taskDir, parseArgs(rest));
+  if (cmd === "classify") return classifyCommand(taskDir, parseArgs(rest));
+  if (cmd === "health") return healthCheck(taskDir, parseArgs(rest));
+  if (cmd === "openclaw-recipe") return openclawRecipe(taskDir, parseArgs(rest));
   if (cmd === "help") return help();
 
   fail(`Unknown command: ${cmd}`);
@@ -31,8 +35,11 @@ Usage:
   lth next <task-dir>
   lth tick <task-dir> [--dry-run]
   lth record <task-dir> --status active|paused|blocked|done|needs-human --note "..."
-    [--blocked-until <iso>] [--reason rate_limit|auth_error|external|manual|unknown]
+    [--blocked-until <iso>] [--reason rate_limit|auth_error|test_failure|missing_context|external|manual|unknown]
     [--source openclaw-provider|codex-cli|scheduler|external-api|manual]
+  lth classify <task-dir> (--text "..."|--file <path>) [--source ...] [--exit-code <n>] [--record]
+  lth health <task-dir>
+  lth openclaw-recipe <task-dir> [--every 30m] [--name longtask-tick]
 `);
 }
 
@@ -276,6 +283,126 @@ function recordProgress(taskDir, args) {
   console.log(`Recorded ${status} for ${checkpoint.taskId}`);
 }
 
+function classifyCommand(taskDir, args) {
+  const { task, checkpoint, errors } = loadAndValidate(taskDir);
+  if (errors.length) {
+    for (const error of errors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const text = readClassifierInput(args);
+  const result = classifyFailure(text, {
+    source: args.source,
+    exitCode: args["exit-code"],
+    task
+  });
+
+  if (args.record) {
+    applyClassification(taskDir, checkpoint, result, text);
+  }
+
+  console.log(JSON.stringify(result, null, 2));
+}
+
+function healthCheck(taskDir, args) {
+  const { task, checkpoint, errors } = loadAndValidate(taskDir);
+  const checks = [];
+
+  checks.push({
+    name: "task-contract",
+    status: errors.length ? "fail" : "pass",
+    message: errors.length ? errors.join("; ") : "task, checkpoint, and harness are readable"
+  });
+
+  if (!errors.length) {
+    const decision = decideNext(checkpoint);
+    checks.push({
+      name: "run-decision",
+      status: decision.decision === "needs-human" ? "warn" : "pass",
+      message: `${decision.decision}: ${decision.reason}`,
+      decision: decision.decision,
+      waitSeconds: decision.waitSeconds
+    });
+  }
+
+  const allowed = task.workerPolicy?.allowed || [];
+  const preferred = task.workerPolicy?.preferred || "";
+  if (preferred || allowed.includes("openclaw-direct-model") || allowed.includes("openclaw-codex-cli")) {
+    checks.push(commandCheck("openclaw", ["--version"], "OpenClaw CLI"));
+  }
+  if (preferred === "openclaw-codex-cli" || allowed.includes("openclaw-codex-cli")) {
+    checks.push(commandCheck("codex", ["--version"], "Codex CLI"));
+  }
+
+  const repoPath = task.context?.repoPath || task.context?.repository || null;
+  if (repoPath) {
+    checks.push(gitRepoCheck(resolve(String(repoPath))));
+  } else if (task.domain === "coding") {
+    checks.push({
+      name: "repo-context",
+      status: "warn",
+      message: "coding task has no context.repoPath; worker must infer the trusted repo from harness.md or user input"
+    });
+  }
+
+  const overall = checks.some((check) => check.status === "fail")
+    ? "fail"
+    : checks.some((check) => check.status === "warn")
+      ? "warn"
+      : "pass";
+
+  console.log(JSON.stringify({
+    status: overall,
+    taskId: task.id,
+    preferredWorker: preferred || null,
+    checks
+  }, null, 2));
+
+  if (overall === "fail" && args.strict) process.exitCode = 1;
+}
+
+function openclawRecipe(taskDir, args) {
+  const { task, errors } = loadAndValidate(taskDir);
+  if (errors.length) {
+    for (const error of errors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const every = String(args.every || "30m");
+  const name = String(args.name || `${task.id}-tick`);
+  const model = String(args.model || "minimax/MiniMax-M2.5");
+  const sessionKey = String(args["session-key"] || `agent:main:cron:${task.id}`);
+  const timeoutSeconds = String(args["timeout-seconds"] || "300");
+  const tools = String(args.tools || "exec read write");
+  const message = [
+    `Run: node ${shellQuote(relativeCliPath())} tick ${shellQuote(taskDir)}.`,
+    "If the decision is wait, done, or needs-human, stop after reporting the decision.",
+    "If the decision is run, start exactly one bounded worker slice using the generated workerPrompt.",
+    "Before stopping, update checkpoint.json and append run events."
+  ].join(" ");
+
+  const lines = [
+    "openclaw cron add \\",
+    `  --name ${shellQuote(name)} \\`,
+    `  --every ${shellQuote(every)} \\`,
+    "  --session isolated \\",
+    `  --session-key ${shellQuote(sessionKey)} \\`,
+    `  --model ${shellQuote(model)} \\`,
+    `  --tools ${shellQuote(tools)} \\`,
+    `  --timeout-seconds ${shellQuote(timeoutSeconds)} \\`,
+    `  --message ${shellQuote(message)}`
+  ];
+
+  console.log(JSON.stringify({
+    taskId: task.id,
+    command: lines.join("\n"),
+    message,
+    schedule: { every, name, sessionKey, model, timeoutSeconds, tools }
+  }, null, 2));
+}
+
 function defaultHarness(template) {
   return `# Harness
 
@@ -368,6 +495,223 @@ function buildWorkerPrompt(task, checkpoint) {
   ].filter(Boolean).join("\n");
 }
 
+function readClassifierInput(args) {
+  if (args.text) return String(args.text);
+  if (args.file) return readFileSync(resolve(String(args.file)), "utf8");
+  fail("classify requires --text or --file.");
+}
+
+function classifyFailure(text, opts = {}) {
+  const normalized = String(text || "");
+  const lower = normalized.toLowerCase();
+  const exitCode = opts.exitCode == null || opts.exitCode === true ? null : Number(opts.exitCode);
+  const source = inferFailureSource(lower, opts.source);
+  const retryAfterSeconds = parseRetryAfterSeconds(normalized);
+  const fallbackWaitSeconds = opts.task?.rateLimitPolicy?.fallbackWaitSeconds ?? 14400;
+
+  if (matchesAny(lower, [
+    "rate limit",
+    "ratelimit",
+    "rate_limit",
+    "too many requests",
+    "quota exceeded",
+    "quota_exceeded",
+    "429",
+    "try again later",
+    "retry after"
+  ])) {
+    const waitSeconds = retryAfterSeconds ?? fallbackWaitSeconds;
+    return {
+      class: "rate_limit",
+      source,
+      statusSuggestion: "blocked",
+      blockedUntil: new Date(Date.now() + waitSeconds * 1000).toISOString(),
+      retryAfterSeconds,
+      fallbackWaitSeconds,
+      confidence: retryAfterSeconds == null ? 0.78 : 0.9,
+      summary: "Rate limit or quota window detected."
+    };
+  }
+
+  if (matchesAny(lower, [
+    "unauthorized",
+    "authentication",
+    "auth error",
+    "invalid api key",
+    "api key",
+    "permission denied",
+    "forbidden",
+    "401",
+    "403"
+  ])) {
+    return {
+      class: "auth_error",
+      source,
+      statusSuggestion: "needs-human",
+      blockedUntil: null,
+      retryAfterSeconds: null,
+      confidence: 0.82,
+      summary: "Authentication or permission problem detected."
+    };
+  }
+
+  if (matchesAny(lower, [
+    "test failed",
+    "tests failed",
+    "failing test",
+    "assertionerror",
+    "err_assertion",
+    "expected",
+    "received",
+    "npm err!",
+    "failed test"
+  ])) {
+    return {
+      class: "test_failure",
+      source,
+      statusSuggestion: "paused",
+      blockedUntil: null,
+      retryAfterSeconds: null,
+      confidence: 0.72,
+      summary: "Test or assertion failure detected."
+    };
+  }
+
+  if (matchesAny(lower, [
+    "missing context",
+    "not enough context",
+    "need more context",
+    "cannot find",
+    "could not find",
+    "file not found",
+    "enoent",
+    "no such file"
+  ])) {
+    return {
+      class: "missing_context",
+      source,
+      statusSuggestion: "needs-human",
+      blockedUntil: null,
+      retryAfterSeconds: null,
+      confidence: 0.7,
+      summary: "Missing context or missing file detected."
+    };
+  }
+
+  return {
+    class: exitCode === 0 ? "success" : "unknown",
+    source,
+    statusSuggestion: exitCode === 0 ? "paused" : "needs-human",
+    blockedUntil: null,
+    retryAfterSeconds: null,
+    confidence: exitCode === 0 ? 0.6 : 0.2,
+    summary: exitCode === 0 ? "No failure pattern detected." : "No known failure pattern detected."
+  };
+}
+
+function applyClassification(taskDir, checkpoint, result, text) {
+  const now = new Date().toISOString();
+  checkpoint.status = result.statusSuggestion;
+  checkpoint.updatedAt = now;
+  checkpoint.nextStep = nextStepForClassification(result);
+  checkpoint.blockedUntil = result.blockedUntil;
+  checkpoint.blocker = result.class === "success" ? null : {
+    type: result.class,
+    source: result.source,
+    message: result.summary,
+    observedAt: now,
+    retryAfterSeconds: result.retryAfterSeconds,
+    requiresHuman: result.statusSuggestion === "needs-human"
+  };
+  writeJson(join(taskDir, "checkpoint.json"), checkpoint);
+  appendRunEvent(taskDir, {
+    type: result.class === "rate_limit" ? "rate_limited" : "failure_classified",
+    status: checkpoint.status,
+    reason: result.class,
+    note: truncate(text, 500),
+    blockedUntil: checkpoint.blockedUntil,
+    blocker: checkpoint.blocker,
+    at: now
+  });
+  appendRunEvent(taskDir, {
+    type: "checkpoint_written",
+    status: checkpoint.status,
+    reason: `classified ${result.class}`,
+    at: now
+  });
+}
+
+function nextStepForClassification(result) {
+  if (result.class === "rate_limit") return "Resume the same bounded slice after the rate-limit window reopens.";
+  if (result.class === "auth_error") return "Fix authentication or permissions, then rerun health checks.";
+  if (result.class === "test_failure") return "Inspect the failing test output and fix the smallest failing slice.";
+  if (result.class === "missing_context") return "Provide the missing file, repo path, or task context before resuming.";
+  if (result.class === "success") return "Review the completed slice and decide the next bounded step.";
+  return "Human review required: classify the failure and choose the next bounded step.";
+}
+
+function inferFailureSource(text, explicitSource) {
+  if (explicitSource && explicitSource !== true) return String(explicitSource);
+  if (text.includes("codex")) return "codex-cli";
+  if (text.includes("openclaw") || text.includes("minimax")) return "openclaw-provider";
+  if (text.includes("cron") || text.includes("scheduler")) return "scheduler";
+  if (text.includes("api")) return "external-api";
+  return "manual";
+}
+
+function parseRetryAfterSeconds(text) {
+  const retryAfter = text.match(/retry(?:\s|-)?after(?:\s|:)+(\d+)/i);
+  if (retryAfter) return Number(retryAfter[1]);
+  const resetIn = text.match(/(?:reset|resets|try again)(?:\s+\w+){0,3}\s+in\s+(\d+)\s*(second|seconds|minute|minutes|hour|hours)/i);
+  if (!resetIn) return null;
+  const value = Number(resetIn[1]);
+  const unit = resetIn[2].toLowerCase();
+  if (unit.startsWith("hour")) return value * 3600;
+  if (unit.startsWith("minute")) return value * 60;
+  return value;
+}
+
+function matchesAny(text, needles) {
+  return needles.some((needle) => text.includes(needle));
+}
+
+function commandCheck(command, args, label) {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: 3000 });
+  if (result.error) {
+    return {
+      name: `${command}-cli`,
+      status: "warn",
+      message: `${label} was not found on PATH`
+    };
+  }
+  if (result.status !== 0) {
+    return {
+      name: `${command}-cli`,
+      status: "warn",
+      message: `${label} command exited with ${result.status}`
+    };
+  }
+  return {
+    name: `${command}-cli`,
+    status: "pass",
+    message: firstLine(result.stdout || result.stderr) || `${label} is available`
+  };
+}
+
+function gitRepoCheck(repoPath) {
+  if (!existsSync(repoPath)) {
+    return { name: "repo-context", status: "fail", message: `repoPath does not exist: ${repoPath}` };
+  }
+  const result = spawnSync("git", ["-C", repoPath, "rev-parse", "--is-inside-work-tree"], {
+    encoding: "utf8",
+    timeout: 3000
+  });
+  if (result.status !== 0 || result.stdout.trim() !== "true") {
+    return { name: "repo-context", status: "fail", message: `repoPath is not a git worktree: ${repoPath}` };
+  }
+  return { name: "repo-context", status: "pass", message: `repoPath is a git worktree: ${repoPath}` };
+}
+
 function requireString(obj, key, errors) {
   if (typeof obj[key] !== "string" || obj[key].trim() === "") errors.push(`missing string: ${key}`);
 }
@@ -393,6 +737,25 @@ function appendRunEvent(taskDir, event) {
   const runPath = join(taskDir, "runs", `${at.slice(0, 10)}.jsonl`);
   mkdirSync(dirname(runPath), { recursive: true });
   appendFileSync(runPath, JSON.stringify({ ...event, at }) + "\n");
+}
+
+function relativeCliPath() {
+  return "src/cli.js";
+}
+
+function shellQuote(value) {
+  const text = String(value);
+  if (/^[a-zA-Z0-9_./:=@+-]+$/.test(text)) return text;
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+function firstLine(text) {
+  return String(text).split(/\r?\n/).find((line) => line.trim())?.trim() || "";
+}
+
+function truncate(text, max) {
+  const value = String(text || "");
+  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
 }
 
 function blockedUntilFromRetryAfter(value) {
