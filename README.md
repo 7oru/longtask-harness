@@ -138,6 +138,33 @@ node src/cli.js record tasks/my-coding-task \
   --note "Codex CLI rate limited while adding parser tests; resume from the same slice."
 ```
 
+## Testing Workflow
+
+Run the full smoke suite before committing:
+
+```bash
+npm test
+```
+
+The smoke suite copies example tasks into temporary directories and verifies both happy paths and rate-limit boundaries:
+
+- examples validate successfully
+- `next` returns `run` for active work
+- `tick --dry-run` generates a worker prompt without writing run logs
+- `record --status blocked --retry-after-seconds ...` makes `next` return `wait`
+- waiting ticks append `tick_started` and `run_skipped`
+- blocked tasks without `blockedUntil` become `needs-human`
+- explicit `needs-human` status stops automation
+- expired `blockedUntil` reopens the task and clears the blocker
+- fresh `init` output validates and can be dry-run ticked
+
+Testing rules:
+
+- Do not mutate `examples/` during boundary tests; copy them to a temporary directory.
+- Add a smoke assertion for every new checkpoint status, run decision, or run event type.
+- Prefer CLI-level tests for protocol behavior, because the repo is intentionally dependency-free.
+- Keep `npm test` fast enough to run before every commit.
+
 ## OpenClaw Integration Shape
 
 There are two useful execution modes.
@@ -262,6 +289,33 @@ node src/cli.js record tasks/my-coding-task \
   --retry-after-seconds 14400 \
   --note "Codex CLI rate limited while adding parser tests; resume from the same slice."
 ```
+
+## 测试流程
+
+提交前运行完整 smoke suite：
+
+```bash
+npm test
+```
+
+smoke suite 会把 example task 复制到临时目录里测试，覆盖 happy path 和 rate-limit 边界：
+
+- examples 可以成功 validate。
+- `next` 对 active work 返回 `run`。
+- `tick --dry-run` 会生成 worker prompt，但不会写 run logs。
+- `record --status blocked --retry-after-seconds ...` 会让 `next` 返回 `wait`。
+- 等待中的 tick 会追加 `tick_started` 和 `run_skipped`。
+- 没有 `blockedUntil` 的 blocked task 会进入 `needs-human`。
+- 显式 `needs-human` 状态会停止自动化。
+- 已过期的 `blockedUntil` 会重新打开任务并清空 blocker。
+- 新 `init` 出来的任务可以 validate，也可以 dry-run tick。
+
+测试规则：
+
+- 边界测试不要直接修改 `examples/`，先复制到临时目录。
+- 每新增一种 checkpoint status、run decision 或 run event type，都要补 smoke assertion。
+- 协议行为优先用 CLI-level test 覆盖，因为这个 repo 刻意保持 dependency-free。
+- `npm test` 要足够快，适合每次 commit 前运行。
 
 ## Harness 在这里的含义
 

@@ -8,7 +8,7 @@
     "longtask-harness": "./src/cli.js"
   },
   "scripts": {
-    "test": "node src/cli.js validate examples/coding && node src/cli.js validate examples/video-analysis && node src/cli.js next examples/coding && node src/cli.js tick examples/coding --dry-run",
+    "test": "node scripts/smoke-test.mjs",
     "demo:next": "node src/cli.js next examples/coding"
   },
   "keywords": [
