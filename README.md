@@ -30,6 +30,41 @@ artifacts/         Generated outputs.
 evidence/          Tests, screenshots, transcripts, clips, and review notes.
 ```
 
+## System Flow
+
+```mermaid
+flowchart TD
+  Scheduler["Scheduler<br/>OpenClaw cron or local runner"] --> Tick["lth tick<br/>single bounded run"]
+  Tick --> ReadState["Read task.json<br/>checkpoint.json<br/>harness.md"]
+  ReadState --> Decision{"Run decision"}
+
+  Decision -->|done| ExitDone["Exit<br/>task complete"]
+  Decision -->|blockedUntil is in the future| Wait["Append skipped run log<br/>wait for next window"]
+  Decision -->|active or window reopened| Prompt["Build worker prompt<br/>one bounded slice"]
+
+  Prompt --> Worker{"Worker adapter"}
+  Worker --> Direct["OpenClaw direct model<br/>for light tasks"]
+  Worker --> Codex["OpenClaw schedules Codex CLI<br/>for coding tasks"]
+
+  Direct --> Capture["Capture output<br/>exit code<br/>evidence"]
+  Codex --> Capture
+  Capture --> Classify{"Classify result"}
+
+  Classify -->|slice complete| Paused["Write checkpoint<br/>status: paused<br/>nextStep"]
+  Classify -->|success criteria verified| Done["Write checkpoint<br/>status: done"]
+  Classify -->|rate limit| Blocked["Write checkpoint<br/>status: blocked<br/>blockedUntil<br/>blocker source"]
+  Classify -->|auth or manual blocker| NeedsHuman["Write checkpoint<br/>status: blocked<br/>needs human action"]
+
+  Paused --> Runs["Append runs/*.jsonl"]
+  Done --> Runs
+  Blocked --> Handoff["Write evidence/handoff-*.md<br/>if context may be lost"]
+  NeedsHuman --> Runs
+  Handoff --> Runs
+
+  Runs --> NextTick["Next scheduler tick"]
+  NextTick --> Scheduler
+```
+
 ## Quick Start
 
 Validate the included examples:
