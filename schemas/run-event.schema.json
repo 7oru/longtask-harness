@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Longtask run event",
+  "type": "object",
+  "required": ["type", "at"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "tick_started",
+        "run_skipped",
+        "worker_prompt_generated",
+        "worker_started",
+        "worker_completed",
+        "worker_failed",
+        "progress_recorded",
+        "rate_limited",
+        "checkpoint_written",
+        "handoff_written",
+        "needs_human"
+      ]
+    },
+    "at": { "type": "string" },
+    "status": { "type": "string" },
+    "decision": { "type": "string" },
+    "reason": { "type": "string" },
+    "note": { "type": "string" },
+    "worker": { "type": "string" },
+    "blockedUntil": {
+      "anyOf": [{ "type": "string" }, { "type": "null" }]
+    },
+    "waitSeconds": {
+      "anyOf": [{ "type": "number" }, { "type": "null" }]
+    },
+    "blocker": {
+      "anyOf": [{ "type": "object" }, { "type": "null" }]
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

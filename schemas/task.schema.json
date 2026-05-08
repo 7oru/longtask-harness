@@ -11,14 +11,92 @@
     "objective": { "type": "string" },
     "successCriteria": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "anyOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["id", "description"],
+            "properties": {
+              "id": { "type": "string" },
+              "description": { "type": "string" },
+              "metric": {
+                "type": "string",
+                "enum": ["manual", "command", "output_contains", "llm_judge", "custom"]
+              },
+              "target": {},
+              "weight": { "type": "number", "minimum": 0 }
+            }
+          }
+        ]
+      },
       "minItems": 1
     },
     "constraints": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "anyOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["id", "description"],
+            "properties": {
+              "id": { "type": "string" },
+              "description": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["hard", "soft"]
+              },
+              "category": {
+                "type": "string",
+                "enum": ["time", "cost", "safety", "scope", "quality", "privacy", "other"]
+              }
+            }
+          }
+        ]
+      }
     },
-    "workerPolicy": { "type": "object" }
+    "context": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string" },
+        "files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "links": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "workerPolicy": {
+      "type": "object",
+      "properties": {
+        "preferred": { "type": "string" },
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "rateLimitPolicy": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["openclaw-provider", "codex-cli", "scheduler", "external-api", "manual"]
+          }
+        },
+        "fallbackWaitSeconds": { "type": "integer", "minimum": 0 },
+        "allowHandoffOnRateLimit": { "type": "boolean" }
+      }
+    }
   }
 }
-

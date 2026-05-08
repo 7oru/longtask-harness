@@ -8,12 +8,47 @@
     "taskId": { "type": "string" },
     "status": {
       "type": "string",
-      "enum": ["active", "paused", "blocked", "done"]
+      "enum": ["active", "paused", "blocked", "done", "needs-human"]
     },
     "currentPhase": { "type": "string" },
     "nextStep": { "type": "string" },
     "blockedUntil": {
       "anyOf": [{ "type": "string" }, { "type": "null" }]
+    },
+    "blocker": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["rate_limit", "auth_error", "external", "manual", "unknown"]
+            },
+            "source": {
+              "type": "string",
+              "enum": ["openclaw-provider", "codex-cli", "scheduler", "external-api", "manual"]
+            },
+            "provider": { "type": "string" },
+            "model": { "type": "string" },
+            "message": { "type": "string" },
+            "observedAt": { "type": "string" },
+            "retryAfterSeconds": {
+              "anyOf": [{ "type": "number" }, { "type": "null" }]
+            },
+            "requiresHuman": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "lastCompletedStep": { "type": "string" },
+    "activeFiles": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "openQuestions": {
+      "type": "array",
+      "items": { "type": "string" }
     },
     "evidence": {
       "type": "array",
@@ -22,4 +57,3 @@
     "updatedAt": { "type": "string" }
   }
 }
-

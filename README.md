@@ -65,6 +65,43 @@ flowchart TD
   NextTick --> Scheduler
 ```
 
+## User Guidelines
+
+Before a long task can run safely, the user should define the parts that the harness cannot infer from tool output alone.
+
+Put durable task intent in `task.json`:
+
+- `objective`: the concrete outcome, not just the activity.
+- `successCriteria`: verifiable checks that tell a future worker when the task is done.
+- `constraints`: scope limits, safety rules, budget rules, forbidden paths, and anything that must not be changed.
+- `workerPolicy`: which workers are preferred or allowed, such as `openclaw-direct-model`, `openclaw-codex-cli`, or `manual-review`.
+
+Put operating rules in `harness.md`:
+
+- Setup and verification commands.
+- Where generated artifacts, evidence, logs, screenshots, transcripts, or patches should go.
+- How large one bounded slice should be, for example one test, one refactor, one scene, or one document section.
+- What evidence is required before a worker can mark a slice complete.
+- What requires human review instead of automatic continuation.
+- Any repo-specific safety notes, such as trusted working directories or files that should not be edited.
+
+Put the initial recovery state in `checkpoint.json`:
+
+- `currentPhase`: the first phase the worker should enter.
+- `nextStep`: the first concrete action.
+- `status`: usually `active`.
+- `blockedUntil`: `null` unless the task is intentionally waiting.
+- `evidence`: an empty list or references to already-known context.
+
+For rate-limit-aware runs, the user should also choose the pause policy:
+
+- Which rate limit sources matter: OpenClaw provider, Codex CLI, scheduler, or external APIs.
+- The conservative fallback wait time when the provider does not return a reset time.
+- Whether another worker may continue lightweight handoff work when the main worker is rate limited.
+- When a blocker should become `needs-human` instead of automatic retry.
+
+The harness can preserve state, classify failures, and resume work, but the user owns the task definition: what success means, what must stay inside the guardrails, and when automation should stop.
+
 ## Quick Start
 
 Validate the included examples:
@@ -79,6 +116,7 @@ Create a task skeleton:
 node src/cli.js init tasks/my-coding-task --template coding
 node src/cli.js validate tasks/my-coding-task
 node src/cli.js next tasks/my-coding-task
+node src/cli.js tick tasks/my-coding-task --dry-run
 ```
 
 Record progress:
@@ -87,6 +125,17 @@ Record progress:
 node src/cli.js record tasks/my-coding-task \
   --status paused \
   --note "Implemented parser skeleton; next run should add adapter tests."
+```
+
+Record a rate-limit pause:
+
+```bash
+node src/cli.js record tasks/my-coding-task \
+  --status blocked \
+  --reason rate_limit \
+  --source codex-cli \
+  --retry-after-seconds 14400 \
+  --note "Codex CLI rate limited while adding parser tests; resume from the same slice."
 ```
 
 ## OpenClaw Integration Shape
@@ -141,6 +190,43 @@ artifacts/         生成的输出。
 evidence/          测试、截图、转录、视频片段和 review notes。
 ```
 
+## 用户需要定义什么
+
+在长任务可以安全自动运行之前，用户需要定义 harness 不能从工具输出里可靠推断的部分。
+
+写进 `task.json` 的是稳定任务意图：
+
+- `objective`：明确结果，而不只是“做某类工作”。
+- `successCriteria`：可验证的完成标准，让未来 worker 知道什么时候可以结束。
+- `constraints`：范围限制、安全规则、预算规则、禁止路径，以及任何不能被改动的东西。
+- `workerPolicy`：允许或偏好的 worker，例如 `openclaw-direct-model`、`openclaw-codex-cli` 或 `manual-review`。
+
+写进 `harness.md` 的是运行规则：
+
+- 环境准备和验证命令。
+- artifacts、evidence、logs、screenshots、transcripts 或 patches 应该放在哪里。
+- 一个 bounded slice 应该多大，例如一个测试、一次 refactor、一个视频场景或一个文档章节。
+- worker 标记 slice 完成之前必须提供什么证据。
+- 哪些情况必须人工 review，而不是自动继续。
+- repo-specific safety notes，例如可信工作目录或不应该编辑的文件。
+
+初始化到 `checkpoint.json` 的是恢复状态：
+
+- `currentPhase`：worker 应该进入的第一阶段。
+- `nextStep`：第一步具体动作。
+- `status`：通常是 `active`。
+- `blockedUntil`：除非任务本来就在等待，否则设为 `null`。
+- `evidence`：空列表，或已经存在的上下文引用。
+
+如果任务需要 rate-limit-aware 运行，用户还应该定义暂停策略：
+
+- 需要识别哪些 rate limit 来源：OpenClaw provider、Codex CLI、scheduler 或外部 API。
+- provider 没有返回 reset time 时，使用多保守的 fallback wait time。
+- 主 worker 被限流时，是否允许另一个 worker 继续做轻量 handoff 整理。
+- 什么 blocker 应该进入 `needs-human`，而不是自动重试。
+
+harness 可以保存状态、分类失败并恢复工作，但任务定义仍然属于用户：什么叫成功、边界在哪里、自动化什么时候应该停。
+
 ## 快速开始
 
 验证内置 examples：
@@ -155,6 +241,7 @@ npm test
 node src/cli.js init tasks/my-coding-task --template coding
 node src/cli.js validate tasks/my-coding-task
 node src/cli.js next tasks/my-coding-task
+node src/cli.js tick tasks/my-coding-task --dry-run
 ```
 
 记录进度：
@@ -163,6 +250,17 @@ node src/cli.js next tasks/my-coding-task
 node src/cli.js record tasks/my-coding-task \
   --status paused \
   --note "Implemented parser skeleton; next run should add adapter tests."
+```
+
+记录一次 rate limit 暂停：
+
+```bash
+node src/cli.js record tasks/my-coding-task \
+  --status blocked \
+  --reason rate_limit \
+  --source codex-cli \
+  --retry-after-seconds 14400 \
+  --note "Codex CLI rate limited while adding parser tests; resume from the same slice."
 ```
 
 ## Harness 在这里的含义

@@ -5,18 +5,52 @@
   "domain": "video-analysis",
   "objective": "Analyze a long video, identify key moments, and produce a clip plan.",
   "successCriteria": [
-    "A transcript or scene index exists.",
-    "Candidate clips include timestamps and rationale.",
-    "The final edit plan references source evidence."
+    {
+      "id": "scene-index",
+      "description": "A transcript or scene index exists.",
+      "metric": "manual",
+      "weight": 0.4
+    },
+    {
+      "id": "clip-rationale",
+      "description": "Candidate clips include timestamps and rationale.",
+      "metric": "manual",
+      "weight": 0.3
+    },
+    {
+      "id": "evidence-backed-plan",
+      "description": "The final edit plan references source evidence.",
+      "metric": "manual",
+      "weight": 0.3
+    }
   ],
   "constraints": [
-    "Keep generated media artifacts under artifacts/.",
-    "Do not delete source media."
+    {
+      "id": "artifact-location",
+      "description": "Keep generated media artifacts under artifacts/.",
+      "type": "hard",
+      "category": "scope"
+    },
+    {
+      "id": "preserve-source",
+      "description": "Do not delete source media.",
+      "type": "hard",
+      "category": "safety"
+    }
   ],
+  "context": {
+    "summary": "Example media task used to prove long-running analysis handoffs.",
+    "files": [],
+    "links": []
+  },
   "workerPolicy": {
     "preferred": "openclaw-direct-model",
     "allowed": ["openclaw-direct-model", "manual-review"]
   },
+  "rateLimitPolicy": {
+    "sources": ["openclaw-provider", "external-api"],
+    "fallbackWaitSeconds": 14400,
+    "allowHandoffOnRateLimit": true
+  },
   "createdAt": "2026-05-08T00:00:00.000Z"
 }
-

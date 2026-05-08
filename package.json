@@ -1,6 +1,6 @@
 {
   "name": "longtask-harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A checkpoint-first harness for long-running AI tasks across coding, research, and media workflows.",
   "type": "module",
   "bin": {
@@ -8,7 +8,7 @@
     "longtask-harness": "./src/cli.js"
   },
   "scripts": {
-    "test": "node src/cli.js validate examples/coding && node src/cli.js validate examples/video-analysis",
+    "test": "node src/cli.js validate examples/coding && node src/cli.js validate examples/video-analysis && node src/cli.js next examples/coding && node src/cli.js tick examples/coding --dry-run",
     "demo:next": "node src/cli.js next examples/coding"
   },
   "keywords": [
@@ -26,4 +26,3 @@
     "node": ">=20"
   }
 }
-

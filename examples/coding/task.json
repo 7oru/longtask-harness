@@ -5,18 +5,53 @@
   "domain": "coding",
   "objective": "Refactor a CLI in small resumable slices while preserving behavior.",
   "successCriteria": [
-    "The CLI test suite passes.",
-    "Every behavior change has a run log entry.",
-    "The checkpoint clearly names the next slice."
+    {
+      "id": "tests-pass",
+      "description": "The CLI test suite passes.",
+      "metric": "command",
+      "target": "npm test",
+      "weight": 0.5
+    },
+    {
+      "id": "changes-logged",
+      "description": "Every behavior change has a run log entry.",
+      "metric": "manual",
+      "weight": 0.25
+    },
+    {
+      "id": "resumable-checkpoint",
+      "description": "The checkpoint clearly names the next slice.",
+      "metric": "manual",
+      "weight": 0.25
+    }
   ],
   "constraints": [
-    "Do not start Codex inside ~/.openclaw.",
-    "Do not retry aggressively after rate limits."
+    {
+      "id": "trusted-repo-only",
+      "description": "Do not start Codex inside ~/.openclaw.",
+      "type": "hard",
+      "category": "safety"
+    },
+    {
+      "id": "no-dense-retries",
+      "description": "Do not retry aggressively after rate limits.",
+      "type": "hard",
+      "category": "cost"
+    }
   ],
+  "context": {
+    "summary": "Example coding task used to prove checkpointed resumability.",
+    "files": [],
+    "links": []
+  },
   "workerPolicy": {
     "preferred": "openclaw-codex-cli",
     "allowed": ["openclaw-direct-model", "openclaw-codex-cli"]
   },
+  "rateLimitPolicy": {
+    "sources": ["openclaw-provider", "codex-cli"],
+    "fallbackWaitSeconds": 14400,
+    "allowHandoffOnRateLimit": true
+  },
   "createdAt": "2026-05-08T00:00:00.000Z"
 }
-

@@ -10,9 +10,10 @@
 ## 0.2 Adapters
 
 - Add OpenClaw cron recipe generator.
-- Add Codex CLI worker prompt generator.
+- Add Codex CLI worker prompt generator. *(Initial `lth tick` prompt generation exists.)*
 - Add adapter health checks for Minimax, Codex CLI, and local repo trust.
-- Add failure classification for rate limits, auth errors, tests, and missing context.
+- Add failure classification for rate limits, auth errors, tests, and missing context. *(Checkpoint blocker fields and run event types are defined; classifier implementation still pending.)*
+- Add machine-readable run decisions for `run`, `wait`, `done`, and `needs-human`. *(Initial `lth next` / `lth tick` support exists.)*
 
 ## 0.3 Evidence
 
@@ -25,4 +26,3 @@
 - Add diagrams and a live demo task.
 - Publish example case studies: coding refactor, PR review, video analysis.
 - Add GitHub Actions validation.
-

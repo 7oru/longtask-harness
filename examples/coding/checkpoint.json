@@ -5,7 +5,10 @@
   "currentPhase": "planning",
   "nextStep": "Inspect the target repo and write the first bounded implementation slice.",
   "blockedUntil": null,
+  "blocker": null,
+  "lastCompletedStep": "",
+  "activeFiles": [],
+  "openQuestions": [],
   "evidence": [],
   "updatedAt": "2026-05-08T00:00:00.000Z"
 }
-
