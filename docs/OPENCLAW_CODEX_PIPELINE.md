@@ -14,6 +14,22 @@ OpenClaw reads the task contract and checkpoint, then starts Codex CLI inside a 
 
 This mode uses the local Codex CLI login/subscription path. It should pause cleanly on rate limits instead of retrying aggressively.
 
+`lth run --worker codex-cli` is the preferred execution entry point for this mode. OpenClaw only needs to wake the task; the harness decides whether the task should run, starts `codex exec`, captures stdout/stderr, classifies failures, and writes checkpoint/run-log state.
+
+```bash
+node src/cli.js run tasks/my-coding-task \
+  --worker codex-cli \
+  --cwd /path/to/trusted/repo
+```
+
+For cloud-independent local runs, use `local-command` instead. The worker prompt is passed on stdin:
+
+```bash
+node src/cli.js run tasks/my-coding-task \
+  --worker local-command \
+  --command "ollama run qwen2.5-coder:32b"
+```
+
 ## Cron Shape
 
 ```bash
@@ -28,13 +44,19 @@ openclaw cron add \
   --message "Read task.json, checkpoint.json, and harness.md. Continue one bounded slice. Update checkpoint before stopping."
 ```
 
-Once `lth tick` is used as the scheduler entry point, the cron message can stay much smaller because the task directory owns the run decision:
+Once `lth run` is used as the scheduler entry point, the cron message can stay small because the task directory owns both the run decision and worker execution:
 
 ```bash
 node src/cli.js openclaw-recipe tasks/my-coding-task --every 30m
 ```
 
-The recipe generator emits the `openclaw cron add` command and the bounded scheduler message. Run `node src/cli.js health <task-dir>` before installing the recipe to check task validity, run decision, OpenClaw availability, Codex CLI availability, and optional repo context.
+For `codex-cli` and `local-command` workers, the recipe generator emits a cron command that calls `node src/cli.js run ...`. For `openclaw-direct-model`, it falls back to `tick` and leaves the bounded worker slice to the OpenClaw model. Run `node src/cli.js health <task-dir>` before installing the recipe to check task validity, run decision, OpenClaw availability, Codex CLI availability, and optional repo context.
+
+## Concurrency
+
+`lth run` uses a task-local `.lth.lock/` directory as a lease before starting a worker. If a cron tick overlaps with an existing worker, the second run returns `decision: "wait"` and exits without changing checkpoint state or starting another worker. The lease has an expiration timestamp; stale locks are removed and replaced before the new worker starts.
+
+Use `--lock-ttl-seconds` to tune the lease window. It should be longer than the expected worker timeout.
 
 ## Worker Contract
 
@@ -48,3 +70,7 @@ A worker must:
 - Produce evidence for claims.
 - Update the checkpoint before exit.
 - Leave enough context for a different worker to resume.
+
+## Adapter Boundary
+
+The harness protocol is local-first. `local-command` can run without any cloud service if the configured command is local. `codex-cli` and `openclaw-direct-model` are optional adapters and may use remote model services depending on local configuration.

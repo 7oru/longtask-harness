@@ -34,7 +34,7 @@ evidence/          Tests, screenshots, transcripts, clips, and review notes.
 
 ```mermaid
 flowchart TD
-  Scheduler["Scheduler<br/>OpenClaw cron or local runner"] --> Tick["lth tick<br/>single bounded run"]
+  Scheduler["Scheduler<br/>OpenClaw cron or local runner"] --> Tick["lth tick/lth run<br/>single bounded run"]
   Tick --> ReadState["Read task.json<br/>checkpoint.json<br/>harness.md"]
   ReadState --> Decision{"Run decision"}
 
@@ -45,9 +45,11 @@ flowchart TD
   Prompt --> Worker{"Worker adapter"}
   Worker --> Direct["OpenClaw direct model<br/>for light tasks"]
   Worker --> Codex["OpenClaw schedules Codex CLI<br/>for coding tasks"]
+  Worker --> Local["Local command<br/>for local-first runs"]
 
   Direct --> Capture["Capture output<br/>exit code<br/>evidence"]
   Codex --> Capture
+  Local --> Capture
   Capture --> Classify{"Classify result"}
 
   Classify -->|slice complete| Paused["Write checkpoint<br/>status: paused<br/>nextStep"]
@@ -151,6 +153,24 @@ Run adapter health checks:
 node src/cli.js health tasks/my-coding-task
 ```
 
+Run one bounded worker slice with a local command:
+
+```bash
+node src/cli.js run tasks/my-coding-task \
+  --worker local-command \
+  --command "ollama run qwen2.5-coder:32b"
+```
+
+`lth run` creates a short-lived `.lth.lock/` directory before starting a worker. If another worker already holds the lock, the command returns `decision: "wait"` and does not start a second worker. Expired locks are cleared automatically.
+
+Run one bounded worker slice with Codex CLI:
+
+```bash
+node src/cli.js run tasks/my-coding-task \
+  --worker codex-cli \
+  --cwd /path/to/trusted/repo
+```
+
 Generate an OpenClaw cron recipe:
 
 ```bash
@@ -177,6 +197,10 @@ The smoke suite copies example tasks into temporary directories and verifies bot
 - expired `blockedUntil` reopens the task and clears the blocker
 - `classify` detects rate limits, auth errors, test failures, and missing context
 - `classify --record` updates checkpoint state and run events
+- `run --worker local-command` executes a bounded local command, captures output, and writes checkpoint state
+- failed local workers are classified and recorded
+- active task locks make `run` wait instead of starting overlapping workers
+- expired task locks are reclaimed and released after the run
 - `health` reports adapter readiness without making local CLI tools mandatory for tests
 - `openclaw-recipe` emits a cron command
 - fresh `init` output validates and can be dry-run ticked
@@ -201,6 +225,10 @@ Mode B: OpenClaw schedules Codex CLI
 OpenClaw acts as the scheduler and harness reader, then spawns Codex CLI inside a trusted git repo for heavier coding. This uses the local Codex CLI login/subscription path rather than an OpenAI API key, and should pause cleanly when Codex is rate limited.
 
 See [docs/OPENCLAW_CODEX_PIPELINE.md](docs/OPENCLAW_CODEX_PIPELINE.md).
+
+Mode C: Local command worker
+
+The harness can run a local command directly with `lth run --worker local-command`. The generated worker prompt is passed on stdin, so this can wrap local models such as Ollama or LM Studio shims, small scripts, or any CLI agent that can read instructions from stdin. This path keeps the protocol independent from cloud services; cloud-backed workers are optional adapters.
 
 ## Status
 
@@ -326,6 +354,24 @@ node src/cli.js classify tasks/my-coding-task \
 node src/cli.js health tasks/my-coding-task
 ```
 
+用本地命令运行一个 bounded worker slice：
+
+```bash
+node src/cli.js run tasks/my-coding-task \
+  --worker local-command \
+  --command "ollama run qwen2.5-coder:32b"
+```
+
+`lth run` 启动 worker 前会创建短生命周期的 `.lth.lock/` 目录。如果另一个 worker 已经持有 lock，命令会返回 `decision: "wait"`，不会启动第二个 worker。过期 lock 会自动清理并接管。
+
+用 Codex CLI 运行一个 bounded worker slice：
+
+```bash
+node src/cli.js run tasks/my-coding-task \
+  --worker codex-cli \
+  --cwd /path/to/trusted/repo
+```
+
 生成 OpenClaw cron recipe：
 
 ```bash
@@ -352,6 +398,10 @@ smoke suite 会把 example task 复制到临时目录里测试，覆盖 happy pa
 - 已过期的 `blockedUntil` 会重新打开任务并清空 blocker。
 - `classify` 会识别 rate limit、auth error、test failure 和 missing context。
 - `classify --record` 会更新 checkpoint state 和 run events。
+- `run --worker local-command` 会运行一个本地 bounded worker slice、捕获输出并写 checkpoint state。
+- 失败的本地 worker 会被分类并记录。
+- active task lock 会让 `run` 等待，不会启动重叠 worker。
+- 过期 task lock 会被接管，并在 run 结束后释放。
 - `health` 会报告 adapter readiness，但测试不会强制本机必须安装所有 CLI。
 - `openclaw-recipe` 会生成 cron command。
 - 新 `init` 出来的任务可以 validate，也可以 dry-run tick。
@@ -426,7 +476,7 @@ Rate limit 时不应该把整段聊天全部塞进 checkpoint，而应该分层�
 
 ## OpenClaw 集成形态
 
-有两种主要执行模式。
+有三种主要执行模式。
 
 Mode A: OpenClaw direct model worker
 
@@ -436,15 +486,20 @@ Mode B: OpenClaw schedules Codex CLI
 
 OpenClaw 作为 scheduler 和 harness reader，在受信任的 git repo 中启动 Codex CLI 做更重的 coding 工作。这个模式使用本地 Codex CLI login/subscription 路径，而不是 OpenAI API key；当 Codex 被 rate limited 时，应当干净暂停，而不是密集重试。
 
+Mode C: local command worker
+
+harness 也可以通过 `lth run --worker local-command` 直接运行本地命令。生成的 worker prompt 会通过 stdin 传给命令，因此可以接 Ollama、LM Studio shim、本地脚本，或任何能从 stdin 读取指令的 CLI agent。这条路径让协议本身不依赖云服务；云端模型只是可选 adapter。
+
 更多细节见 [docs/OPENCLAW_CODEX_PIPELINE.md](docs/OPENCLAW_CODEX_PIPELINE.md)。
 
 ## 当前状态
 
-这个项目目前仍处于早期 scaffold 阶段。已经有任务契约、checkpoint schema、基础 CLI 和 examples；下一步目标是实现真正的 rate limit aware runner，例如：
+这个项目目前仍处于早期 scaffold 阶段。已经有任务契约、checkpoint schema、基础 CLI、examples，以及初版 worker runner，例如：
 
 - `lth record --status blocked --blocked-until <iso> --reason rate_limit`
 - `lth next` 输出 `decision: run | wait | done | needs-human`
-- `lth tick` 做单次调度、执行、分类、checkpoint 更新和 run log 记录
+- `lth tick` 做单次调度判断和 worker prompt 生成
+- `lth run --worker local-command|codex-cli` 做单次调度、执行、输出捕获、分类、checkpoint 更新和 run log 记录
 - OpenClaw cron recipe generator
 - Codex CLI worker prompt generator
 - rate limit / auth / test failure classifier

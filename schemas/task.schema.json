@@ -71,7 +71,9 @@
         "notes": {
           "type": "array",
           "items": { "type": "string" }
-        }
+        },
+        "repoPath": { "type": "string" },
+        "repository": { "type": "string" }
       }
     },
     "workerPolicy": {
@@ -81,7 +83,33 @@
         "allowed": {
           "type": "array",
           "items": { "type": "string" }
-        }
+        },
+        "lockTtlSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "localWorker": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string" },
+        "cwd": { "type": "string" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "codexWorker": {
+      "type": "object",
+      "properties": {
+        "cwd": { "type": "string" },
+        "model": { "type": "string" },
+        "sandbox": {
+          "type": "string",
+          "enum": ["read-only", "workspace-write", "danger-full-access"]
+        },
+        "oss": { "type": "boolean" },
+        "localProvider": {
+          "type": "string",
+          "enum": ["lmstudio", "ollama"]
+        },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 }
       }
     },
     "rateLimitPolicy": {

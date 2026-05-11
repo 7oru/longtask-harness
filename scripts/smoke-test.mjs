@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,7 @@ function run(args, opts = {}) {
     cwd: repoRoot,
     encoding: "utf8"
   });
-  if (result.status !== 0) {
+  if (result.status !== 0 && !opts.allowFailure) {
     throw new Error([
       `Command failed: node src/cli.js ${args.join(" ")}`,
       `exit: ${result.status}`,
@@ -272,6 +272,112 @@ check("classify routes test failures to paused", () => withTask((taskDir) => {
   assert.equal(result.statusSuggestion, "paused");
 }));
 
+check("run local-command executes one bounded slice", () => withTask((taskDir) => {
+  const command = [
+    "node -e",
+    JSON.stringify([
+      "process.stdin.setEncoding('utf8');",
+      "let input = '';",
+      "process.stdin.on('data', chunk => input += chunk);",
+      "process.stdin.on('end', () => {",
+      "  if (!input.includes('Continue exactly one bounded slice')) process.exit(2);",
+      "  console.log('local worker completed');",
+      "});"
+    ].join(""))
+  ].join(" ");
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "local-command",
+    "--command", command,
+    "--timeout-seconds", "5"
+  ], { json: true });
+  const checkpoint = readCheckpoint(taskDir);
+  const types = runEvents(taskDir).map((event) => event.type);
+
+  assert.equal(result.decision, "run");
+  assert.equal(result.worker, "local-command");
+  assert.equal(result.exitCode, 0);
+  assert.match(result.outputPath, /^evidence\/worker-output-/);
+  assert.equal(checkpoint.status, "paused");
+  assert.ok(checkpoint.evidence.some((item) => item.path === result.outputPath));
+  assert.ok(types.includes("worker_started"));
+  assert.ok(types.includes("worker_completed"));
+  assert.ok(types.includes("checkpoint_written"));
+}));
+
+check("run local-command classifies failed worker output", () => withTask((taskDir) => {
+  const command = "node -e \"console.error('429 Too Many Requests. Retry after 2 seconds.'); process.exit(1)\"";
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "local-command",
+    "--command", command,
+    "--timeout-seconds", "5"
+  ], { json: true, allowFailure: true });
+  const checkpoint = readCheckpoint(taskDir);
+  const types = runEvents(taskDir).map((event) => event.type);
+
+  assert.equal(result.worker, "local-command");
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.classification.class, "rate_limit");
+  assert.equal(checkpoint.status, "blocked");
+  assert.equal(checkpoint.blocker.type, "rate_limit");
+  assert.ok(types.includes("worker_failed"));
+  assert.ok(types.includes("rate_limited"));
+  assert.ok(types.includes("checkpoint_written"));
+}));
+
+check("run waits when another worker holds the task lock", () => withTask((taskDir) => {
+  const lockDir = join(taskDir, ".lth.lock");
+  mkdirSync(lockDir);
+  writeFileSync(join(lockDir, "lock.json"), JSON.stringify({
+    owner: "test-worker",
+    acquiredAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString()
+  }, null, 2), "utf8");
+
+  const before = countRunLines(taskDir);
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "local-command",
+    "--command", "node -e \"process.exit(9)\""
+  ], { json: true });
+  const after = countRunLines(taskDir);
+
+  assert.equal(result.decision, "wait");
+  assert.equal(result.reason, "task lock is active");
+  assert.equal(result.worker, null);
+  assert.ok(result.waitSeconds > 0);
+  assert.equal(result.lock.owner, "test-worker");
+  assert.equal(after, before);
+}));
+
+check("run takes over expired task lock and releases it", () => withTask((taskDir) => {
+  const lockDir = join(taskDir, ".lth.lock");
+  mkdirSync(lockDir);
+  writeFileSync(join(lockDir, "lock.json"), JSON.stringify({
+    owner: "stale-worker",
+    acquiredAt: new Date(Date.now() - 120_000).toISOString(),
+    expiresAt: new Date(Date.now() - 60_000).toISOString()
+  }, null, 2), "utf8");
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "local-command",
+    "--command", "node -e \"process.stdin.resume(); console.log('stale lock cleared')\"",
+    "--timeout-seconds", "5"
+  ], { json: true });
+
+  assert.equal(result.decision, "run");
+  assert.equal(result.exitCode, 0);
+  assert.equal(existsSync(lockDir), false);
+}));
+
 check("health returns adapter checks without failing smoke suite", () => {
   const health = run(["health", "examples/coding"], { json: true });
   const names = health.checks.map((check) => check.name);
@@ -289,7 +395,8 @@ check("openclaw-recipe emits a cron command", () => {
   assert.equal(recipe.taskId, "coding-example");
   assert.match(recipe.command, /openclaw cron add/);
   assert.match(recipe.command, /lth|src\/cli\.js|node/);
-  assert.match(recipe.message, /tick/);
+  assert.match(recipe.message, /run/);
+  assert.match(recipe.message, /codex-cli/);
 });
 
 check("init output validates", () => {

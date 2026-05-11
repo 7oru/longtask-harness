@@ -8,7 +8,7 @@ coverage/
 !.env.example
 
 # Local run outputs can be large and machine-specific.
+**/.lth.lock/
 tasks/*/artifacts/
 tasks/*/evidence/
 tasks/*/runs/
-

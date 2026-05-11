@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 
@@ -17,6 +17,7 @@ function main(argv) {
   if (cmd === "validate") return validateTask(taskDir);
   if (cmd === "next") return printNext(taskDir);
   if (cmd === "tick") return tick(taskDir, parseArgs(rest));
+  if (cmd === "run") return runWorker(taskDir, parseArgs(rest));
   if (cmd === "record") return recordProgress(taskDir, parseArgs(rest));
   if (cmd === "classify") return classifyCommand(taskDir, parseArgs(rest));
   if (cmd === "health") return healthCheck(taskDir, parseArgs(rest));
@@ -34,6 +35,8 @@ Usage:
   lth validate <task-dir>
   lth next <task-dir>
   lth tick <task-dir> [--dry-run]
+  lth run <task-dir> [--worker local-command|codex-cli] [--command "..."] [--cwd <dir>]
+    [--timeout-seconds <n>] [--lock-ttl-seconds <n>] [--dry-run]
   lth record <task-dir> --status active|paused|blocked|done|needs-human --note "..."
     [--blocked-until <iso>] [--reason rate_limit|auth_error|test_failure|missing_context|external|manual|unknown]
     [--source openclaw-provider|codex-cli|scheduler|external-api|manual]
@@ -235,6 +238,211 @@ function tick(taskDir, args) {
   }, null, 2));
 }
 
+function runWorker(taskDir, args) {
+  const dryRun = Boolean(args["dry-run"]);
+  const { task, checkpoint, errors } = loadAndValidate(taskDir);
+  if (errors.length) {
+    for (const error of errors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (dryRun) return runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun);
+
+  const lock = acquireRunLock(taskDir, task, args);
+  if (!lock.acquired) {
+    return printRunResult({
+      decision: "wait",
+      reason: "task lock is active",
+      dryRun,
+      status: checkpoint.status,
+      waitSeconds: lock.waitSeconds,
+      worker: null,
+      lock: lock.info
+    });
+  }
+
+  try {
+    return runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun);
+  } finally {
+    releaseRunLock(lock);
+  }
+}
+
+function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
+  const now = new Date();
+  const decision = decideNext(checkpoint, now);
+  const events = [{
+    type: "tick_started",
+    decision: decision.decision,
+    status: checkpoint.status,
+    at: now.toISOString()
+  }];
+
+  if (decision.decision === "wait") {
+    events.push({
+      type: "run_skipped",
+      reason: decision.reason,
+      blockedUntil: checkpoint.blockedUntil,
+      waitSeconds: decision.waitSeconds,
+      at: now.toISOString()
+    });
+    if (!dryRun) appendEvents(taskDir, events);
+    return printRunResult({
+      decision: decision.decision,
+      reason: decision.reason,
+      dryRun,
+      status: checkpoint.status,
+      waitSeconds: decision.waitSeconds,
+      worker: null
+    });
+  }
+
+  if (decision.decision === "done" || decision.decision === "needs-human") {
+    if (decision.decision === "needs-human") {
+      events.push({
+        type: "needs_human",
+        reason: decision.reason,
+        nextStep: checkpoint.nextStep,
+        at: now.toISOString()
+      });
+    }
+    if (!dryRun) appendEvents(taskDir, events);
+    return printRunResult({
+      decision: decision.decision,
+      reason: decision.reason,
+      dryRun,
+      status: checkpoint.status,
+      waitSeconds: decision.waitSeconds,
+      worker: null
+    });
+  }
+
+  const wasBlocked = checkpoint.status === "blocked";
+  if (wasBlocked) {
+    checkpoint.status = "active";
+    checkpoint.blockedUntil = null;
+    checkpoint.blocker = null;
+    checkpoint.updatedAt = now.toISOString();
+    events.push({
+      type: "checkpoint_written",
+      status: checkpoint.status,
+      reason: "blocked window reopened",
+      at: now.toISOString()
+    });
+  }
+
+  const workerPrompt = buildWorkerPrompt(task, checkpoint);
+  const worker = normalizeWorker(args.worker || task.workerPolicy?.preferred || "local-command");
+  const commandPlan = buildWorkerCommand(taskDir, task, worker, workerPrompt, args);
+  events.push({
+    type: "worker_prompt_generated",
+    worker,
+    at: now.toISOString()
+  });
+
+  if (dryRun) {
+    return printRunResult({
+      decision: decision.decision,
+      reason: decision.reason,
+      dryRun,
+      status: checkpoint.status,
+      waitSeconds: decision.waitSeconds,
+      worker,
+      command: commandPlan.displayCommand,
+      cwd: commandPlan.cwd,
+      workerPrompt
+    });
+  }
+
+  if (wasBlocked) writeJson(join(taskDir, "checkpoint.json"), checkpoint);
+  appendEvents(taskDir, events);
+
+  const startedAt = new Date().toISOString();
+  appendRunEvent(taskDir, {
+    type: "worker_started",
+    worker,
+    note: commandPlan.displayCommand,
+    at: startedAt
+  });
+
+  const beforeUpdatedAt = checkpoint.updatedAt;
+  const result = executeWorkerCommand(commandPlan, workerPrompt);
+  const finishedAt = new Date().toISOString();
+  const outputPath = writeWorkerOutput(taskDir, {
+    worker,
+    command: commandPlan.displayCommand,
+    cwd: commandPlan.cwd,
+    exitCode: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: result.error?.message || null,
+    startedAt,
+    finishedAt
+  });
+
+  appendRunEvent(taskDir, {
+    type: result.status === 0 ? "worker_completed" : "worker_failed",
+    worker,
+    status: result.status === 0 ? "paused" : "needs-human",
+    reason: result.status === 0 ? "exit 0" : `exit ${result.status}`,
+    note: outputPath,
+    evidence: [{ type: "worker-output", path: outputPath }],
+    at: finishedAt
+  });
+
+  let finalCheckpoint = readJson(join(taskDir, "checkpoint.json"));
+  let classification = null;
+  if (result.status === 0) {
+    if (finalCheckpoint.updatedAt === beforeUpdatedAt) {
+      finalCheckpoint.status = "paused";
+      finalCheckpoint.lastCompletedStep = `Worker ${worker} completed one bounded slice.`;
+      finalCheckpoint.nextStep = "Review worker output and choose the next bounded step.";
+      finalCheckpoint.evidence = Array.isArray(finalCheckpoint.evidence) ? finalCheckpoint.evidence : [];
+      finalCheckpoint.evidence.push({
+        type: "worker-output",
+        path: outputPath,
+        observedAt: finishedAt
+      });
+      finalCheckpoint.updatedAt = finishedAt;
+      finalCheckpoint.blocker = null;
+      finalCheckpoint.blockedUntil = null;
+      writeJson(join(taskDir, "checkpoint.json"), finalCheckpoint);
+      appendRunEvent(taskDir, {
+        type: "checkpoint_written",
+        status: finalCheckpoint.status,
+        reason: "worker completed without checkpoint update",
+        at: finishedAt
+      });
+    }
+  } else {
+    const combinedOutput = [result.stdout, result.stderr, result.error?.message || ""].filter(Boolean).join("\n");
+    classification = classifyFailure(combinedOutput, {
+      source: worker === "codex-cli" ? "codex-cli" : "manual",
+      exitCode: result.status,
+      task
+    });
+    finalCheckpoint = readJson(join(taskDir, "checkpoint.json"));
+    applyClassification(taskDir, finalCheckpoint, classification, combinedOutput);
+  }
+
+  printRunResult({
+    decision: decision.decision,
+    reason: decision.reason,
+    dryRun,
+    status: readJson(join(taskDir, "checkpoint.json")).status,
+    waitSeconds: decision.waitSeconds,
+    worker,
+    command: commandPlan.displayCommand,
+    cwd: commandPlan.cwd,
+    exitCode: result.status,
+    outputPath,
+    classification
+  });
+
+  if (result.status !== 0) process.exitCode = result.status;
+}
+
 function recordProgress(taskDir, args) {
   const status = args.status || "active";
   const note = args.note || "";
@@ -376,12 +584,21 @@ function openclawRecipe(taskDir, args) {
   const sessionKey = String(args["session-key"] || `agent:main:cron:${task.id}`);
   const timeoutSeconds = String(args["timeout-seconds"] || "300");
   const tools = String(args.tools || "exec read write");
-  const message = [
-    `Run: node ${shellQuote(relativeCliPath())} tick ${shellQuote(taskDir)}.`,
-    "If the decision is wait, done, or needs-human, stop after reporting the decision.",
-    "If the decision is run, start exactly one bounded worker slice using the generated workerPrompt.",
-    "Before stopping, update checkpoint.json and append run events."
-  ].join(" ");
+  const worker = normalizeWorker(args.worker || task.workerPolicy?.preferred || "");
+  const schedulerCommand = worker === "codex-cli" || worker === "local-command"
+    ? `node ${shellQuote(relativeCliPath())} run ${shellQuote(taskDir)} --worker ${shellQuote(worker)} --timeout-seconds ${shellQuote(timeoutSeconds)}`
+    : `node ${shellQuote(relativeCliPath())} tick ${shellQuote(taskDir)}`;
+  const message = worker === "codex-cli" || worker === "local-command"
+    ? [
+      `Run: ${schedulerCommand}.`,
+      "Report the JSON result and stop."
+    ].join(" ")
+    : [
+      `Run: ${schedulerCommand}.`,
+      "If the decision is wait, done, or needs-human, stop after reporting the decision.",
+      "If the decision is run, start exactly one bounded worker slice using the generated workerPrompt.",
+      "Before stopping, update checkpoint.json and append run events."
+    ].join(" ");
 
   const lines = [
     "openclaw cron add \\",
@@ -399,7 +616,7 @@ function openclawRecipe(taskDir, args) {
     taskId: task.id,
     command: lines.join("\n"),
     message,
-    schedule: { every, name, sessionKey, model, timeoutSeconds, tools }
+    schedule: { every, name, sessionKey, model, timeoutSeconds, tools, worker, schedulerCommand }
   }, null, 2));
 }
 
@@ -641,6 +858,180 @@ function applyClassification(taskDir, checkpoint, result, text) {
   });
 }
 
+function normalizeWorker(worker) {
+  const value = String(worker || "").trim();
+  if (value === "openclaw-codex-cli") return "codex-cli";
+  if (value === "codex") return "codex-cli";
+  if (value === "local") return "local-command";
+  return value;
+}
+
+function buildWorkerCommand(taskDir, task, worker, workerPrompt, args) {
+  if (worker === "local-command") return buildLocalCommand(taskDir, task, args);
+  if (worker === "codex-cli") return buildCodexCommand(taskDir, task, args);
+  fail(`Unsupported worker adapter: ${worker}`);
+}
+
+function buildLocalCommand(taskDir, task, args) {
+  const command = args.command || task.localWorker?.command;
+  if (!command || command === true) {
+    fail("local-command requires --command or task.localWorker.command.");
+  }
+  const cwd = resolveWorkerCwd(taskDir, task, args.cwd || task.localWorker?.cwd);
+  const timeoutSeconds = Number(args["timeout-seconds"] || task.localWorker?.timeoutSeconds || 1800);
+  assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
+  return {
+    kind: "local-command",
+    command: String(command),
+    args: [],
+    cwd,
+    shell: true,
+    timeoutMs: timeoutSeconds * 1000,
+    displayCommand: String(command)
+  };
+}
+
+function buildCodexCommand(taskDir, task, args) {
+  const cwdValue = args.cwd || task.codexWorker?.cwd || task.context?.repoPath || task.context?.repository;
+  if (!cwdValue) {
+    fail("codex-cli requires --cwd, task.codexWorker.cwd, or task.context.repoPath.");
+  }
+  const cwd = resolveWorkerCwd(taskDir, task, cwdValue);
+  const timeoutSeconds = Number(args["timeout-seconds"] || task.codexWorker?.timeoutSeconds || 1800);
+  assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
+  const commandArgs = ["exec", "--cd", cwd, "--ask-for-approval", "never"];
+  const sandbox = args.sandbox || task.codexWorker?.sandbox || "workspace-write";
+  if (sandbox && sandbox !== true) commandArgs.push("--sandbox", String(sandbox));
+  const model = args.model || task.codexWorker?.model;
+  if (model && model !== true) commandArgs.push("--model", String(model));
+  if (args.oss || task.codexWorker?.oss) commandArgs.push("--oss");
+  const localProvider = args["local-provider"] || task.codexWorker?.localProvider;
+  if (localProvider && localProvider !== true) commandArgs.push("--local-provider", String(localProvider));
+  commandArgs.push("-");
+
+  return {
+    kind: "codex-cli",
+    command: "codex",
+    args: commandArgs,
+    cwd,
+    shell: false,
+    timeoutMs: timeoutSeconds * 1000,
+    displayCommand: ["codex", ...commandArgs.map(shellQuote)].join(" ")
+  };
+}
+
+function resolveWorkerCwd(taskDir, task, cwdValue) {
+  const value = cwdValue || task.context?.repoPath || task.context?.repository || taskDir;
+  return resolve(taskDir, String(value));
+}
+
+function executeWorkerCommand(plan, workerPrompt) {
+  const result = spawnSync(plan.command, plan.args, {
+    cwd: plan.cwd,
+    input: workerPrompt,
+    encoding: "utf8",
+    shell: plan.shell,
+    timeout: plan.timeoutMs,
+    maxBuffer: 10 * 1024 * 1024
+  });
+  return {
+    status: result.status ?? (result.error ? 1 : 0),
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+    error: result.error || null
+  };
+}
+
+function writeWorkerOutput(taskDir, record) {
+  const stamp = record.finishedAt.replace(/[:.]/g, "-");
+  const relativePath = join("evidence", `worker-output-${stamp}.txt`);
+  const fullPath = join(taskDir, relativePath);
+  mkdirSync(dirname(fullPath), { recursive: true });
+  const text = [
+    `worker: ${record.worker}`,
+    `command: ${record.command}`,
+    `cwd: ${record.cwd}`,
+    `exitCode: ${record.exitCode}`,
+    `startedAt: ${record.startedAt}`,
+    `finishedAt: ${record.finishedAt}`,
+    record.error ? `error: ${record.error}` : "",
+    "",
+    "## stdout",
+    record.stdout || "",
+    "",
+    "## stderr",
+    record.stderr || ""
+  ].filter((line) => line !== "").join("\n");
+  writeFileSync(fullPath, text, "utf8");
+  return relativePath;
+}
+
+function appendEvents(taskDir, events) {
+  for (const event of events) appendRunEvent(taskDir, event);
+}
+
+function printRunResult(result) {
+  console.log(JSON.stringify(result, null, 2));
+}
+
+function acquireRunLock(taskDir, task, args) {
+  const lockDir = join(taskDir, ".lth.lock");
+  const now = Date.now();
+  const ttlSeconds = Number(args["lock-ttl-seconds"] || task.workerPolicy?.lockTtlSeconds || args["timeout-seconds"] || 1860);
+  assertPositiveSeconds(ttlSeconds, "--lock-ttl-seconds");
+  const expiresAt = new Date(now + ttlSeconds * 1000).toISOString();
+  const owner = String(args["lock-owner"] || `${process.pid}@${process.platform}`);
+  const info = {
+    owner,
+    pid: process.pid,
+    acquiredAt: new Date(now).toISOString(),
+    expiresAt
+  };
+
+  try {
+    mkdirSync(lockDir);
+    writeJson(join(lockDir, "lock.json"), info);
+    return { acquired: true, path: lockDir, info };
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+
+  const existing = readLockInfo(lockDir);
+  const existingExpiry = Date.parse(existing?.expiresAt || "");
+  if (Number.isFinite(existingExpiry) && existingExpiry <= now) {
+    rmSync(lockDir, { recursive: true, force: true });
+    try {
+      mkdirSync(lockDir);
+      writeJson(join(lockDir, "lock.json"), info);
+      return { acquired: true, path: lockDir, info, stoleExpired: existing };
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
+
+  const waitSeconds = Number.isFinite(existingExpiry)
+    ? Math.max(1, Math.ceil((existingExpiry - now) / 1000))
+    : ttlSeconds;
+  return {
+    acquired: false,
+    path: lockDir,
+    waitSeconds,
+    info: existing || { path: lockDir, message: "lock exists but lock.json could not be read" }
+  };
+}
+
+function releaseRunLock(lock) {
+  if (lock?.acquired && lock.path) rmSync(lock.path, { recursive: true, force: true });
+}
+
+function readLockInfo(lockDir) {
+  try {
+    return JSON.parse(readFileSync(join(lockDir, "lock.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function nextStepForClassification(result) {
   if (result.class === "rate_limit") return "Resume the same bounded slice after the rate-limit window reopens.";
   if (result.class === "auth_error") return "Fix authentication or permissions, then rerun health checks.";
@@ -767,6 +1158,10 @@ function blockedUntilFromRetryAfter(value) {
 
 function assertIsoDate(value, flag) {
   if (Number.isNaN(Date.parse(value))) fail(`Invalid ${flag}: ${value}`);
+}
+
+function assertPositiveSeconds(value, flag) {
+  if (!Number.isFinite(value) || value <= 0) fail(`Invalid ${flag}: ${value}`);
 }
 
 function splitCsv(value) {
