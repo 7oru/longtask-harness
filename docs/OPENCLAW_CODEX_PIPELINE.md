@@ -74,3 +74,60 @@ A worker must:
 ## Adapter Boundary
 
 The harness protocol is local-first. `local-command` can run without any cloud service if the configured command is local. `codex-cli` and `openclaw-direct-model` are optional adapters and may use remote model services depending on local configuration.
+
+This document describes the current primary integration path. The intended long-term shape is scheduler and worker adapters around the same checkpoint-first core. See [ADAPTER_ARCHITECTURE.md](ADAPTER_ARCHITECTURE.md) for the generalized boundary.
+
+## Codex Session Evidence
+
+When `codex-cli` hits a rate limit, the harness should keep the checkpoint small and store raw session context as evidence.
+
+`lth run --worker codex-cli` now attempts to attach a `codex-session` evidence item when a failed Codex run is classified as `rate_limit`. It resolves the session path in this order:
+
+- `--codex-session-path <path>` or `task.codexWorker.sessionPath`
+- a `.codex/sessions/...jsonl` or `.codex/archived_sessions/...jsonl` path found in Codex stdout/stderr
+- the newest `.jsonl` under `$CODEX_HOME/sessions`, `$CODEX_HOME/archived_sessions`, `~/.codex/sessions`, or `~/.codex/archived_sessions` within the run window
+
+The evidence item points to the raw trace:
+
+```json
+{
+  "type": "codex-session",
+  "path": "/Users/example/.codex/sessions/trace.jsonl",
+  "source": "codex-cli",
+  "note": "Raw Codex CLI session trace for interrupted rate-limited run."
+}
+```
+
+The checkpoint still owns only resumable state: blocker, `blockedUntil`, next step, active files, open questions, and evidence pointers.
+
+## Kimi Fallback
+
+For environments with Kimi CLI installed, Codex CLI can fall back to Kimi when the primary Codex run is classified as `rate_limit`.
+
+Use a one-off CLI override:
+
+```bash
+node src/cli.js run tasks/my-coding-task \
+  --worker codex-cli \
+  --fallback-worker kimi-cli \
+  --cwd /path/to/trusted/repo
+```
+
+Or configure the task contract:
+
+```json
+{
+  "workerPolicy": {
+    "preferred": "openclaw-codex-cli",
+    "allowed": ["openclaw-codex-cli", "kimi-cli"],
+    "fallbackOnRateLimit": "kimi-cli"
+  },
+  "kimiWorker": {
+    "cwd": "/path/to/trusted/repo",
+    "model": "kimi-k2",
+    "timeoutSeconds": 1800
+  }
+}
+```
+
+The fallback receives the same bounded worker prompt. If Kimi succeeds, the task is checkpointed as `paused` with evidence for both the original Codex rate limit and the Kimi output. If Kimi also fails, the fallback output is classified and the checkpoint is updated from that final failure.

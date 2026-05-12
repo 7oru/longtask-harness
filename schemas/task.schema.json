@@ -84,7 +84,8 @@
           "type": "array",
           "items": { "type": "string" }
         },
-        "lockTtlSeconds": { "type": "integer", "minimum": 1 }
+        "lockTtlSeconds": { "type": "integer", "minimum": 1 },
+        "fallbackOnRateLimit": { "type": "string" }
       }
     },
     "localWorker": {
@@ -112,6 +113,14 @@
         "timeoutSeconds": { "type": "integer", "minimum": 1 }
       }
     },
+    "kimiWorker": {
+      "type": "object",
+      "properties": {
+        "cwd": { "type": "string" },
+        "model": { "type": "string" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
     "rateLimitPolicy": {
       "type": "object",
       "properties": {
@@ -119,7 +128,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["openclaw-provider", "codex-cli", "scheduler", "external-api", "manual"]
+            "enum": ["openclaw-provider", "codex-cli", "kimi-cli", "scheduler", "external-api", "manual"]
           }
         },
         "fallbackWaitSeconds": { "type": "integer", "minimum": 0 },

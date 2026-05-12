@@ -224,7 +224,7 @@ Mode B: OpenClaw schedules Codex CLI
 
 OpenClaw acts as the scheduler and harness reader, then spawns Codex CLI inside a trusted git repo for heavier coding. This uses the local Codex CLI login/subscription path rather than an OpenAI API key, and should pause cleanly when Codex is rate limited.
 
-See [docs/OPENCLAW_CODEX_PIPELINE.md](docs/OPENCLAW_CODEX_PIPELINE.md).
+See [docs/OPENCLAW_CODEX_PIPELINE.md](docs/OPENCLAW_CODEX_PIPELINE.md). For the adapter boundary that lets the harness scale beyond OpenClaw + Codex CLI, see [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md).
 
 Mode C: Local command worker
 
@@ -472,6 +472,7 @@ Rate limit 时不应该把整段聊天全部塞进 checkpoint，而应该分层�
 - `checkpoint.json`：保存当前 phase、下一步、`blockedUntil`、blocker、active files、open questions 和 evidence 引用。
 - `runs/*.jsonl`：保存 append-only 事件流，例如 run started、step completed、command result、failure classified。
 - `evidence/handoff-*.md`：保存给下一个人或 AI worker 读的短摘要。
+- Codex session trace：当 `codex-cli` 遇到 rate limit 时，checkpoint 的 `evidence` 可以记录本地 `.codex/sessions/...jsonl` 路径，作为必要时深挖的原始轨迹。
 - `git diff`：对 coding task 来说，这是最真实的代码上下文；checkpoint 只解释它的意图和下一步。
 
 ## OpenClaw 集成形态

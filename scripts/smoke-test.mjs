@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,8 @@ const cli = join(repoRoot, "src", "cli.js");
 function run(args, opts = {}) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd: repoRoot,
-    encoding: "utf8"
+    encoding: "utf8",
+    env: opts.env || process.env
   });
   if (result.status !== 0 && !opts.allowFailure) {
     throw new Error([
@@ -243,6 +244,28 @@ check("classify --record updates checkpoint and run events", () => withTask((tas
   assert.ok(types.includes("checkpoint_written"));
 }));
 
+check("classify --record links explicit Codex session evidence on rate limit", () => withTask((taskDir) => {
+  const sessionPath = join(taskDir, "evidence", "codex-session.jsonl");
+  mkdirSync(dirname(sessionPath), { recursive: true });
+  writeFileSync(sessionPath, "{}\n", "utf8");
+
+  run([
+    "classify",
+    taskDir,
+    "--text", "Codex CLI returned 429 Too Many Requests.",
+    "--source", "codex-cli",
+    "--codex-session-path", sessionPath,
+    "--record"
+  ], { json: true });
+
+  const checkpoint = readCheckpoint(taskDir);
+  const rateLimitEvent = runEvents(taskDir).find((event) => event.type === "rate_limited");
+
+  assert.equal(checkpoint.status, "blocked");
+  assert.ok(checkpoint.evidence.some((item) => item.type === "codex-session" && item.path === sessionPath));
+  assert.ok(rateLimitEvent.evidence.some((item) => item.type === "codex-session" && item.path === sessionPath));
+}));
+
 check("classify routes auth and missing context to needs-human", () => withTask((taskDir) => {
   const auth = run([
     "classify",
@@ -328,6 +351,87 @@ check("run local-command classifies failed worker output", () => withTask((taskD
   assert.ok(types.includes("worker_failed"));
   assert.ok(types.includes("rate_limited"));
   assert.ok(types.includes("checkpoint_written"));
+}));
+
+check("run codex-cli links session evidence from failed rate-limit output", () => withTask((taskDir) => {
+  const binDir = mkdtempSync(join(taskDir, "fake-bin-"));
+  const sessionPath = join(taskDir, ".codex", "sessions", "fake-codex-session.jsonl");
+  const codexPath = join(binDir, "codex");
+  mkdirSync(dirname(sessionPath), { recursive: true });
+  writeFileSync(sessionPath, "{}\n", "utf8");
+  writeFileSync(codexPath, [
+    "#!/usr/bin/env node",
+    `console.error("Codex CLI returned 429 Too Many Requests. Session: ${sessionPath}");`,
+    "process.exit(1);"
+  ].join("\n"), "utf8");
+  chmodSync(codexPath, 0o755);
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "codex-cli",
+    "--cwd", taskDir,
+    "--timeout-seconds", "5"
+  ], {
+    json: true,
+    allowFailure: true,
+    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }
+  });
+  const checkpoint = readCheckpoint(taskDir);
+
+  assert.equal(result.worker, "codex-cli");
+  assert.equal(result.classification.class, "rate_limit");
+  assert.equal(checkpoint.status, "blocked");
+  assert.ok(checkpoint.evidence.some((item) => item.type === "codex-session" && item.path === sessionPath));
+}));
+
+check("run codex-cli falls back to kimi-cli on rate limit", () => withTask((taskDir) => {
+  const binDir = mkdtempSync(join(taskDir, "fake-bin-"));
+  const sessionPath = join(taskDir, ".codex", "sessions", "fallback-codex-session.jsonl");
+  const codexPath = join(binDir, "codex");
+  const kimiPath = join(binDir, "kimi");
+  mkdirSync(dirname(sessionPath), { recursive: true });
+  writeFileSync(sessionPath, "{}\n", "utf8");
+  writeFileSync(codexPath, [
+    "#!/usr/bin/env node",
+    `console.error("Codex CLI returned 429 Too Many Requests. Session: ${sessionPath}");`,
+    "process.exit(1);"
+  ].join("\n"), "utf8");
+  writeFileSync(kimiPath, [
+    "#!/usr/bin/env node",
+    "process.stdin.setEncoding('utf8');",
+    "let input = '';",
+    "process.stdin.on('data', chunk => input += chunk);",
+    "process.stdin.on('end', () => {",
+    "  if (!input.includes('Continue exactly one bounded slice')) process.exit(2);",
+    "  console.log('kimi fallback completed');",
+    "});"
+  ].join("\n"), "utf8");
+  chmodSync(codexPath, 0o755);
+  chmodSync(kimiPath, 0o755);
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "codex-cli",
+    "--fallback-worker", "kimi-cli",
+    "--cwd", taskDir,
+    "--timeout-seconds", "5"
+  ], {
+    json: true,
+    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }
+  });
+  const checkpoint = readCheckpoint(taskDir);
+  const events = runEvents(taskDir);
+
+  assert.equal(result.worker, "codex-cli");
+  assert.equal(result.classification.class, "rate_limit");
+  assert.equal(result.fallback.worker, "kimi-cli");
+  assert.equal(result.fallback.exitCode, 0);
+  assert.equal(checkpoint.status, "paused");
+  assert.ok(checkpoint.evidence.some((item) => item.type === "codex-session" && item.path === sessionPath));
+  assert.ok(checkpoint.evidence.some((item) => item.path === result.fallback.outputPath));
+  assert.ok(events.some((event) => event.type === "rate_limited" && event.status === "fallback"));
 }));
 
 check("run waits when another worker holds the task lock", () => withTask((taskDir) => {

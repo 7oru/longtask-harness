@@ -16,9 +16,10 @@ Important fields:
 - `constraints`: safety, scope, quality, privacy, time, or budget constraints. Items can be strings or structured constraints with `id`, `description`, `type`, and `category`.
 - `context`: stable background information the worker needs on every run.
 - `context.repoPath` or `context.repository`: trusted local repository path for coding workers.
-- `workerPolicy`: preferred and allowed worker adapters. It may also set `lockTtlSeconds` for `lth run` leases.
+- `workerPolicy`: preferred and allowed worker adapters. It may also set `lockTtlSeconds` for `lth run` leases and `fallbackOnRateLimit` for a backup worker.
 - `localWorker`: command, working directory, and timeout for `lth run --worker local-command`.
 - `codexWorker`: working directory, model, sandbox, local OSS provider, and timeout for `lth run --worker codex-cli`.
+- `kimiWorker`: working directory, model, and timeout for `lth run --worker kimi-cli` or Kimi fallback runs.
 - `rateLimitPolicy`: rate-limit sources, fallback wait time, and whether lightweight handoff work may continue.
 
 ## checkpoint.json
@@ -36,6 +37,8 @@ Important fields:
 - `activeFiles`: files or artifacts most relevant to the next run.
 - `openQuestions`: unresolved questions that may affect the next slice.
 - `evidence`: references to tests, screenshots, logs, clips, or review notes.
+
+For Codex CLI rate limits, `evidence` may include a `codex-session` item whose `path` points at the local `.codex/sessions/...jsonl` trace. Treat that trace as raw recovery evidence; keep the checkpoint focused on status, blocker, next step, and evidence pointers.
 
 ## runs/*.jsonl
 

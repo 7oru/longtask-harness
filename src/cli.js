@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const VERSION = "0.2.0";
@@ -35,12 +36,14 @@ Usage:
   lth validate <task-dir>
   lth next <task-dir>
   lth tick <task-dir> [--dry-run]
-  lth run <task-dir> [--worker local-command|codex-cli] [--command "..."] [--cwd <dir>]
-    [--timeout-seconds <n>] [--lock-ttl-seconds <n>] [--dry-run]
+  lth run <task-dir> [--worker local-command|codex-cli|kimi-cli] [--command "..."] [--cwd <dir>]
+    [--timeout-seconds <n>] [--lock-ttl-seconds <n>] [--codex-session-path <path>]
+    [--fallback-worker <worker>] [--dry-run]
   lth record <task-dir> --status active|paused|blocked|done|needs-human --note "..."
     [--blocked-until <iso>] [--reason rate_limit|auth_error|test_failure|missing_context|external|manual|unknown]
-    [--source openclaw-provider|codex-cli|scheduler|external-api|manual]
-  lth classify <task-dir> (--text "..."|--file <path>) [--source ...] [--exit-code <n>] [--record]
+    [--source openclaw-provider|codex-cli|kimi-cli|scheduler|external-api|manual]
+  lth classify <task-dir> (--text "..."|--file <path>) [--source ...] [--exit-code <n>]
+    [--codex-session-path <path>] [--record]
   lth health <task-dir>
   lth openclaw-recipe <task-dir> [--every 30m] [--name longtask-tick]
 `);
@@ -422,8 +425,50 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
       exitCode: result.status,
       task
     });
+    const primaryFailureEvidence = [
+      {
+        type: "worker-output",
+        path: outputPath,
+        observedAt: finishedAt
+      },
+      codexSessionEvidenceForFailure({
+        worker,
+        task,
+        args,
+        text: combinedOutput,
+        classification,
+        startedAt,
+        finishedAt
+      })
+    ].filter(Boolean);
+    const fallbackWorker = fallbackWorkerForRateLimit({ worker, classification, task, args });
+    if (fallbackWorker) {
+      const fallback = executeFallbackWorker({
+        taskDir,
+        task,
+        args,
+        worker: fallbackWorker,
+        workerPrompt,
+        beforeUpdatedAt,
+        primaryClassification: classification,
+        primaryEvidence: primaryFailureEvidence
+      });
+      return printFallbackRunResult({
+        taskDir,
+        decision,
+        dryRun,
+        worker,
+        commandPlan,
+        result,
+        outputPath,
+        classification,
+        fallback
+      });
+    }
     finalCheckpoint = readJson(join(taskDir, "checkpoint.json"));
-    applyClassification(taskDir, finalCheckpoint, classification, combinedOutput);
+    applyClassification(taskDir, finalCheckpoint, classification, combinedOutput, {
+      evidence: primaryFailureEvidence
+    });
   }
 
   printRunResult({
@@ -507,7 +552,17 @@ function classifyCommand(taskDir, args) {
   });
 
   if (args.record) {
-    applyClassification(taskDir, checkpoint, result, text);
+    applyClassification(taskDir, checkpoint, result, text, {
+      evidence: codexSessionEvidenceForFailure({
+        worker: result.source === "codex-cli" ? "codex-cli" : result.source,
+        task,
+        args,
+        text,
+        classification: result,
+        startedAt: new Date(Date.now() - 1000).toISOString(),
+        finishedAt: new Date().toISOString()
+      })
+    });
   }
 
   console.log(JSON.stringify(result, null, 2));
@@ -535,12 +590,17 @@ function healthCheck(taskDir, args) {
   }
 
   const allowed = task.workerPolicy?.allowed || [];
+  const normalizedAllowed = allowed.map(normalizeWorker);
   const preferred = task.workerPolicy?.preferred || "";
-  if (preferred || allowed.includes("openclaw-direct-model") || allowed.includes("openclaw-codex-cli")) {
+  const normalizedPreferred = normalizeWorker(preferred);
+  if (preferred === "openclaw-direct-model" || allowed.includes("openclaw-direct-model")) {
     checks.push(commandCheck("openclaw", ["--version"], "OpenClaw CLI"));
   }
-  if (preferred === "openclaw-codex-cli" || allowed.includes("openclaw-codex-cli")) {
+  if (normalizedPreferred === "codex-cli" || normalizedAllowed.includes("codex-cli")) {
     checks.push(commandCheck("codex", ["--version"], "Codex CLI"));
+  }
+  if (normalizedPreferred === "kimi-cli" || normalizedAllowed.includes("kimi-cli") || normalizeWorker(task.workerPolicy?.fallbackOnRateLimit) === "kimi-cli") {
+    checks.push(commandCheck("kimi", ["--version"], "Kimi CLI"));
   }
 
   const repoPath = task.context?.repoPath || task.context?.repository || null;
@@ -585,10 +645,10 @@ function openclawRecipe(taskDir, args) {
   const timeoutSeconds = String(args["timeout-seconds"] || "300");
   const tools = String(args.tools || "exec read write");
   const worker = normalizeWorker(args.worker || task.workerPolicy?.preferred || "");
-  const schedulerCommand = worker === "codex-cli" || worker === "local-command"
+  const schedulerCommand = isRunnableWorker(worker)
     ? `node ${shellQuote(relativeCliPath())} run ${shellQuote(taskDir)} --worker ${shellQuote(worker)} --timeout-seconds ${shellQuote(timeoutSeconds)}`
     : `node ${shellQuote(relativeCliPath())} tick ${shellQuote(taskDir)}`;
-  const message = worker === "codex-cli" || worker === "local-command"
+  const message = isRunnableWorker(worker)
     ? [
       `Run: ${schedulerCommand}.`,
       "Report the JSON result and stop."
@@ -826,8 +886,9 @@ function classifyFailure(text, opts = {}) {
   };
 }
 
-function applyClassification(taskDir, checkpoint, result, text) {
+function applyClassification(taskDir, checkpoint, result, text, opts = {}) {
   const now = new Date().toISOString();
+  const evidence = normalizeEvidence(opts.evidence, now);
   checkpoint.status = result.statusSuggestion;
   checkpoint.updatedAt = now;
   checkpoint.nextStep = nextStepForClassification(result);
@@ -840,6 +901,9 @@ function applyClassification(taskDir, checkpoint, result, text) {
     retryAfterSeconds: result.retryAfterSeconds,
     requiresHuman: result.statusSuggestion === "needs-human"
   };
+  if (evidence.length) {
+    checkpoint.evidence = appendEvidenceItems(checkpoint.evidence, evidence);
+  }
   writeJson(join(taskDir, "checkpoint.json"), checkpoint);
   appendRunEvent(taskDir, {
     type: result.class === "rate_limit" ? "rate_limited" : "failure_classified",
@@ -848,6 +912,7 @@ function applyClassification(taskDir, checkpoint, result, text) {
     note: truncate(text, 500),
     blockedUntil: checkpoint.blockedUntil,
     blocker: checkpoint.blocker,
+    evidence: evidence.length ? evidence : undefined,
     at: now
   });
   appendRunEvent(taskDir, {
@@ -858,10 +923,158 @@ function applyClassification(taskDir, checkpoint, result, text) {
   });
 }
 
+function fallbackWorkerForRateLimit({ worker, classification, task, args }) {
+  if (worker !== "codex-cli" || classification?.class !== "rate_limit") return null;
+  const configured = args["fallback-worker"] || task.workerPolicy?.fallbackOnRateLimit;
+  if (!configured || configured === true) return null;
+  const fallback = normalizeWorker(configured);
+  return fallback && fallback !== worker ? fallback : null;
+}
+
+function executeFallbackWorker({
+  taskDir,
+  task,
+  args,
+  worker,
+  workerPrompt,
+  beforeUpdatedAt,
+  primaryClassification,
+  primaryEvidence
+}) {
+  const plan = buildWorkerCommand(taskDir, task, worker, workerPrompt, args);
+  const fallbackStartedAt = new Date().toISOString();
+  appendRunEvent(taskDir, {
+    type: "rate_limited",
+    status: "fallback",
+    reason: primaryClassification.class,
+    note: `Primary worker rate limited; falling back to ${worker}.`,
+    blockedUntil: primaryClassification.blockedUntil,
+    evidence: primaryEvidence,
+    at: fallbackStartedAt
+  });
+  appendRunEvent(taskDir, {
+    type: "worker_prompt_generated",
+    worker,
+    reason: "fallback_on_rate_limit",
+    at: fallbackStartedAt
+  });
+  appendRunEvent(taskDir, {
+    type: "worker_started",
+    worker,
+    reason: "fallback_on_rate_limit",
+    note: plan.displayCommand,
+    at: fallbackStartedAt
+  });
+
+  const result = executeWorkerCommand(plan, workerPrompt);
+  const fallbackFinishedAt = new Date().toISOString();
+  const outputPath = writeWorkerOutput(taskDir, {
+    worker,
+    command: plan.displayCommand,
+    cwd: plan.cwd,
+    exitCode: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: result.error?.message || null,
+    startedAt: fallbackStartedAt,
+    finishedAt: fallbackFinishedAt
+  });
+  const fallbackOutputEvidence = {
+    type: "worker-output",
+    path: outputPath,
+    observedAt: fallbackFinishedAt
+  };
+
+  appendRunEvent(taskDir, {
+    type: result.status === 0 ? "worker_completed" : "worker_failed",
+    worker,
+    status: result.status === 0 ? "paused" : "needs-human",
+    reason: result.status === 0 ? "fallback exit 0" : `fallback exit ${result.status}`,
+    note: outputPath,
+    evidence: [fallbackOutputEvidence],
+    at: fallbackFinishedAt
+  });
+
+  let classification = null;
+  if (result.status === 0) {
+    const checkpoint = readJson(join(taskDir, "checkpoint.json"));
+    const evidenceItems = [
+      ...primaryEvidence,
+      fallbackOutputEvidence
+    ];
+    const beforeEvidenceLength = Array.isArray(checkpoint.evidence) ? checkpoint.evidence.length : 0;
+    checkpoint.evidence = appendEvidenceItems(checkpoint.evidence, evidenceItems);
+    if (checkpoint.updatedAt === beforeUpdatedAt) {
+      checkpoint.status = "paused";
+      checkpoint.lastCompletedStep = `Fallback worker ${worker} completed one bounded slice after Codex CLI rate limit.`;
+      checkpoint.nextStep = "Review fallback worker output and choose the next bounded step.";
+      checkpoint.updatedAt = fallbackFinishedAt;
+      checkpoint.blocker = null;
+      checkpoint.blockedUntil = null;
+      writeJson(join(taskDir, "checkpoint.json"), checkpoint);
+      appendRunEvent(taskDir, {
+        type: "checkpoint_written",
+        status: checkpoint.status,
+        reason: "fallback worker completed without checkpoint update",
+        at: fallbackFinishedAt
+      });
+    } else if (checkpoint.evidence.length > beforeEvidenceLength) {
+      checkpoint.updatedAt = fallbackFinishedAt;
+      writeJson(join(taskDir, "checkpoint.json"), checkpoint);
+      appendRunEvent(taskDir, {
+        type: "checkpoint_written",
+        status: checkpoint.status,
+        reason: "fallback evidence recorded",
+        at: fallbackFinishedAt
+      });
+    }
+  } else {
+    const combinedOutput = [result.stdout, result.stderr, result.error?.message || ""].filter(Boolean).join("\n");
+    classification = classifyFailure(combinedOutput, {
+      source: worker,
+      exitCode: result.status,
+      task
+    });
+    const checkpoint = readJson(join(taskDir, "checkpoint.json"));
+    applyClassification(taskDir, checkpoint, classification, combinedOutput, {
+      evidence: [...primaryEvidence, fallbackOutputEvidence]
+    });
+    process.exitCode = result.status;
+  }
+
+  return {
+    worker,
+    command: plan.displayCommand,
+    cwd: plan.cwd,
+    exitCode: result.status,
+    outputPath,
+    classification
+  };
+}
+
+function printFallbackRunResult({ taskDir, decision, dryRun, worker, commandPlan, result, outputPath, classification, fallback }) {
+  printRunResult({
+    decision: decision.decision,
+    reason: decision.reason,
+    dryRun,
+    status: readJson(join(taskDir, "checkpoint.json")).status,
+    waitSeconds: decision.waitSeconds,
+    worker,
+    command: commandPlan.displayCommand,
+    cwd: commandPlan.cwd,
+    exitCode: result.status,
+    finalExitCode: fallback.exitCode,
+    outputPath,
+    classification,
+    fallback
+  });
+}
+
 function normalizeWorker(worker) {
   const value = String(worker || "").trim();
   if (value === "openclaw-codex-cli") return "codex-cli";
   if (value === "codex") return "codex-cli";
+  if (value === "kimi") return "kimi-cli";
   if (value === "local") return "local-command";
   return value;
 }
@@ -869,7 +1082,12 @@ function normalizeWorker(worker) {
 function buildWorkerCommand(taskDir, task, worker, workerPrompt, args) {
   if (worker === "local-command") return buildLocalCommand(taskDir, task, args);
   if (worker === "codex-cli") return buildCodexCommand(taskDir, task, args);
+  if (worker === "kimi-cli") return buildKimiCommand(taskDir, task, args);
   fail(`Unsupported worker adapter: ${worker}`);
+}
+
+function isRunnableWorker(worker) {
+  return ["codex-cli", "local-command", "kimi-cli"].includes(worker);
 }
 
 function buildLocalCommand(taskDir, task, args) {
@@ -917,6 +1135,36 @@ function buildCodexCommand(taskDir, task, args) {
     shell: false,
     timeoutMs: timeoutSeconds * 1000,
     displayCommand: ["codex", ...commandArgs.map(shellQuote)].join(" ")
+  };
+}
+
+function buildKimiCommand(taskDir, task, args) {
+  const cwdValue = args.cwd || task.kimiWorker?.cwd || task.context?.repoPath || task.context?.repository;
+  if (!cwdValue) {
+    fail("kimi-cli requires --cwd, task.kimiWorker.cwd, or task.context.repoPath.");
+  }
+  const cwd = resolveWorkerCwd(taskDir, task, cwdValue);
+  const timeoutSeconds = Number(args["timeout-seconds"] || task.kimiWorker?.timeoutSeconds || 1800);
+  assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
+  const commandArgs = [
+    "--work-dir", cwd,
+    "--print",
+    "--input-format", "text",
+    "--output-format", "text",
+    "--final-message-only",
+    "--yolo"
+  ];
+  const model = args["kimi-model"] || task.kimiWorker?.model;
+  if (model && model !== true) commandArgs.push("--model", String(model));
+
+  return {
+    kind: "kimi-cli",
+    command: "kimi",
+    args: commandArgs,
+    cwd,
+    shell: false,
+    timeoutMs: timeoutSeconds * 1000,
+    displayCommand: ["kimi", ...commandArgs.map(shellQuote)].join(" ")
   };
 }
 
@@ -1060,6 +1308,106 @@ function parseRetryAfterSeconds(text) {
   if (unit.startsWith("hour")) return value * 3600;
   if (unit.startsWith("minute")) return value * 60;
   return value;
+}
+
+function codexSessionEvidenceForFailure({ worker, task, args, text, classification, startedAt, finishedAt }) {
+  if (worker !== "codex-cli" || classification?.class !== "rate_limit") return null;
+  const sessionPath = resolveCodexSessionPath({
+    explicitPath: args["codex-session-path"] || task.codexWorker?.sessionPath,
+    text,
+    startedAt,
+    finishedAt
+  });
+  if (!sessionPath) return null;
+  return {
+    type: "codex-session",
+    path: sessionPath,
+    source: "codex-cli",
+    observedAt: finishedAt,
+    note: "Raw Codex CLI session trace for interrupted rate-limited run."
+  };
+}
+
+function resolveCodexSessionPath({ explicitPath, text, startedAt, finishedAt }) {
+  if (explicitPath && explicitPath !== true) return expandHome(String(explicitPath));
+  const fromOutput = extractCodexSessionPath(text);
+  if (fromOutput) return fromOutput;
+  return findLatestCodexSessionPath(startedAt, finishedAt);
+}
+
+function extractCodexSessionPath(text) {
+  const pattern = /((?:~|\/)[^\s"'<>]*\.codex\/(?:sessions|archived_sessions)\/[^\s"'<>]+\.jsonl)/g;
+  const matches = String(text || "").matchAll(pattern);
+  for (const match of matches) {
+    const candidate = expandHome(match[1].replace(/[),.;:]+$/, ""));
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function findLatestCodexSessionPath(startedAt, finishedAt) {
+  const roots = codexSessionRoots();
+  const startedMs = Date.parse(startedAt) - 5000;
+  const finishedMs = Date.parse(finishedAt) + 60_000;
+  const files = roots.flatMap((root) => collectJsonlFiles(root, 6));
+  return files
+    .filter((file) => file.mtimeMs >= startedMs && file.mtimeMs <= finishedMs)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.path || null;
+}
+
+function codexSessionRoots() {
+  const homes = [process.env.CODEX_HOME, join(homedir(), ".codex")].filter(Boolean).map((value) => resolve(String(value)));
+  return Array.from(new Set(homes.flatMap((root) => [
+    join(root, "sessions"),
+    join(root, "archived_sessions")
+  ])));
+}
+
+function collectJsonlFiles(root, depth) {
+  if (depth < 0 || !existsSync(root)) return [];
+  let entries = [];
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.flatMap((entry) => {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) return collectJsonlFiles(path, depth - 1);
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) return [];
+    try {
+      const stat = statSync(path);
+      return [{ path, mtimeMs: stat.mtimeMs }];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function normalizeEvidence(value, observedAt) {
+  const items = Array.isArray(value) ? value : value ? [value] : [];
+  return items
+    .filter(Boolean)
+    .map((item) => ({ observedAt, ...item }));
+}
+
+function appendEvidenceItems(existing, items) {
+  const evidence = Array.isArray(existing) ? existing : [];
+  const seen = new Set(evidence.map((item) => `${item.type || ""}:${item.path || ""}`));
+  for (const item of items) {
+    const key = `${item.type || ""}:${item.path || ""}`;
+    if (!seen.has(key)) {
+      evidence.push(item);
+      seen.add(key);
+    }
+  }
+  return evidence;
+}
+
+function expandHome(path) {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+  return path;
 }
 
 function matchesAny(text, needles) {

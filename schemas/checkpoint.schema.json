@@ -27,7 +27,7 @@
             },
             "source": {
               "type": "string",
-              "enum": ["openclaw-provider", "codex-cli", "scheduler", "external-api", "manual"]
+              "enum": ["openclaw-provider", "codex-cli", "kimi-cli", "scheduler", "external-api", "manual"]
             },
             "provider": { "type": "string" },
             "model": { "type": "string" },
