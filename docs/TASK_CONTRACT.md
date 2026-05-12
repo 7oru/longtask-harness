@@ -16,11 +16,23 @@ Important fields:
 - `constraints`: safety, scope, quality, privacy, time, or budget constraints. Items can be strings or structured constraints with `id`, `description`, `type`, and `category`.
 - `context`: stable background information the worker needs on every run.
 - `context.repoPath` or `context.repository`: trusted local repository path for coding workers.
+- `scheduler`: scheduler adapter config, such as `type: "openclaw-cron"`, cadence, scheduler model, and scheduler timeout.
 - `workerPolicy`: preferred and allowed worker adapters. It may also set `lockTtlSeconds` for `lth run` leases and `fallbackOnRateLimit` for a backup worker.
 - `localWorker`: command, working directory, and timeout for `lth run --worker local-command`.
 - `codexWorker`: working directory, model, sandbox, local OSS provider, and timeout for `lth run --worker codex-cli`.
 - `kimiWorker`: working directory, model, and timeout for `lth run --worker kimi-cli` or Kimi fallback runs.
 - `rateLimitPolicy`: rate-limit sources, fallback wait time, and whether lightweight handoff work may continue.
+
+`lth init` can write these fields up front and immediately check the configured scheduler and workers:
+
+```bash
+node src/cli.js init tasks/my-coding-task \
+  --scheduler openclaw-cron \
+  --worker codex-cli \
+  --fallback-worker kimi-cli \
+  --cwd /path/to/trusted/repo \
+  --check
+```
 
 ## checkpoint.json
 

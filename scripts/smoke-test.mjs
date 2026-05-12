@@ -516,4 +516,40 @@ check("init output validates", () => {
   }
 });
 
+check("init configures scheduler, worker fallback, and health checks", () => {
+  const dir = mkdtempSync(join(tmpdir(), "longtask-harness-init-config-"));
+  const taskDir = join(dir, "configured-task");
+  try {
+    const result = run([
+      "init",
+      taskDir,
+      "--template", "coding",
+      "--scheduler", "openclaw-cron",
+      "--worker", "codex-cli",
+      "--fallback-worker", "kimi-cli",
+      "--cwd", repoRoot,
+      "--check"
+    ], { json: true });
+    const task = JSON.parse(readFileSync(join(taskDir, "task.json"), "utf8"));
+    const checkNames = result.health.checks.map((check) => check.name);
+
+    assert.equal(result.initialized, true);
+    assert.equal(task.scheduler.type, "openclaw-cron");
+    assert.equal(task.workerPolicy.preferred, "codex-cli");
+    assert.equal(task.workerPolicy.fallbackOnRateLimit, "kimi-cli");
+    assert.deepEqual(task.workerPolicy.allowed, ["codex-cli", "kimi-cli"]);
+    assert.equal(task.context.repoPath, repoRoot);
+    assert.equal(task.codexWorker.cwd, repoRoot);
+    assert.equal(task.kimiWorker.cwd, repoRoot);
+    assert.ok(checkNames.includes("scheduler-config"));
+    assert.ok(checkNames.includes("openclaw-cli"));
+    assert.ok(checkNames.includes("codex-cli"));
+    assert.ok(checkNames.includes("kimi-cli"));
+    assert.ok(checkNames.includes("worker-plan:codex-cli"));
+    assert.ok(checkNames.includes("worker-plan:kimi-cli"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 console.log("smoke test passed");

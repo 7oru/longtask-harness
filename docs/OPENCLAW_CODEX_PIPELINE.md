@@ -104,6 +104,20 @@ The checkpoint still owns only resumable state: blocker, `blockedUntil`, next st
 
 For environments with Kimi CLI installed, Codex CLI can fall back to Kimi when the primary Codex run is classified as `rate_limit`.
 
+Create that setup during task initialization:
+
+```bash
+node src/cli.js init tasks/my-coding-task \
+  --template coding \
+  --scheduler openclaw-cron \
+  --worker codex-cli \
+  --fallback-worker kimi-cli \
+  --cwd /path/to/trusted/repo \
+  --check
+```
+
+The `--check` report verifies the task contract, scheduler config, OpenClaw CLI availability, Codex CLI availability, Kimi CLI availability, repo path, and dry-run worker command construction.
+
 Use a one-off CLI override:
 
 ```bash

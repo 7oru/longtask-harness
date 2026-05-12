@@ -76,6 +76,16 @@
         "repository": { "type": "string" }
       }
     },
+    "scheduler": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "every": { "type": "string" },
+        "name": { "type": "string" },
+        "model": { "type": "string" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
     "workerPolicy": {
       "type": "object",
       "properties": {

@@ -76,7 +76,8 @@ Put durable task intent in `task.json`:
 - `objective`: the concrete outcome, not just the activity.
 - `successCriteria`: verifiable checks that tell a future worker when the task is done.
 - `constraints`: scope limits, safety rules, budget rules, forbidden paths, and anything that must not be changed.
-- `workerPolicy`: which workers are preferred or allowed, such as `openclaw-direct-model`, `openclaw-codex-cli`, or `manual-review`.
+- `scheduler`: which scheduler wakes the task, such as `openclaw-cron` or `manual`.
+- `workerPolicy`: which workers are preferred or allowed, such as `codex-cli`, `kimi-cli`, `local-command`, or `manual-review`.
 
 Put operating rules in `harness.md`:
 
@@ -119,6 +120,18 @@ node src/cli.js init tasks/my-coding-task --template coding
 node src/cli.js validate tasks/my-coding-task
 node src/cli.js next tasks/my-coding-task
 node src/cli.js tick tasks/my-coding-task --dry-run
+```
+
+Create a configured OpenClaw + Codex task with Kimi fallback and run startup checks:
+
+```bash
+node src/cli.js init tasks/my-coding-task \
+  --template coding \
+  --scheduler openclaw-cron \
+  --worker codex-cli \
+  --fallback-worker kimi-cli \
+  --cwd /path/to/trusted/repo \
+  --check
 ```
 
 Record progress:

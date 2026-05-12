@@ -24,6 +24,7 @@ Responsibilities:
 - Provide the command or message that wakes `lth`.
 - Pass scheduler-specific metadata when useful, such as job id, session key, or trigger time.
 - Report scheduler availability in health checks.
+- Be configurable during `lth init`.
 
 Examples:
 
@@ -45,6 +46,7 @@ Responsibilities:
 - Classify or expose enough output for harness classification.
 - Return evidence references, including raw session traces when available.
 - Avoid writing scheduler-level state.
+- Support startup health checks without running a full task when possible.
 
 Examples:
 

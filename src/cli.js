@@ -14,7 +14,7 @@ function main(argv) {
   const taskDir = taskDirArg ? resolve(taskDirArg) : null;
   if (!taskDir && cmd !== "help") fail(`Missing task directory for "${cmd}".`);
 
-  if (cmd === "init") return initTask(taskDir, parseArgs(rest));
+  if (cmd === "init" || cmd === "initiate") return initTask(taskDir, parseArgs(rest));
   if (cmd === "validate") return validateTask(taskDir);
   if (cmd === "next") return printNext(taskDir);
   if (cmd === "tick") return tick(taskDir, parseArgs(rest));
@@ -33,6 +33,8 @@ function help() {
 
 Usage:
   lth init <task-dir> [--template coding|video-analysis]
+    [--scheduler openclaw-cron|manual] [--worker codex-cli|kimi-cli|local-command]
+    [--fallback-worker kimi-cli] [--cwd <dir>] [--check] [--strict]
   lth validate <task-dir>
   lth next <task-dir>
   lth tick <task-dir> [--dry-run]
@@ -64,6 +66,17 @@ function parseArgs(args) {
 function initTask(taskDir, args) {
   const template = args.template || "coding";
   if (!["coding", "video-analysis"].includes(template)) fail(`Unsupported template: ${template}`);
+  const scheduler = normalizeScheduler(args.scheduler || (template === "coding" ? "openclaw-cron" : "manual"));
+  const preferredWorker = normalizeWorker(args.worker || (template === "coding" ? "codex-cli" : "local-command"));
+  const fallbackWorker = args["fallback-worker"] && args["fallback-worker"] !== true
+    ? normalizeWorker(args["fallback-worker"])
+    : null;
+  const cwd = args.cwd && args.cwd !== true ? resolve(String(args.cwd)) : null;
+  const timeoutSeconds = args["timeout-seconds"] && args["timeout-seconds"] !== true
+    ? Number(args["timeout-seconds"])
+    : null;
+  if (timeoutSeconds != null) assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
+
   mkdirSync(taskDir, { recursive: true });
   mkdirSync(join(taskDir, "runs"), { recursive: true });
   mkdirSync(join(taskDir, "artifacts"), { recursive: true });
@@ -95,14 +108,26 @@ function initTask(taskDir, args) {
     context: {
       summary: "Add domain context, repo notes, source material, or user preferences here.",
       files: [],
-      links: []
+      links: [],
+      ...(cwd ? { repoPath: cwd } : {})
+    },
+    scheduler: {
+      type: scheduler,
+      ...(scheduler === "openclaw-cron" ? {
+        every: String(args.every || "30m"),
+        name: String(args.name || `${basenameSafe(taskDir)}-tick`),
+        model: String(args.model || "minimax/MiniMax-M2.5"),
+        timeoutSeconds: Number(args["scheduler-timeout-seconds"] || 300)
+      } : {})
     },
     workerPolicy: {
-      preferred: template === "coding" ? "openclaw-codex-cli" : "openclaw-direct-model",
-      allowed: ["openclaw-direct-model", "openclaw-codex-cli"]
+      preferred: preferredWorker,
+      allowed: uniqueStrings([preferredWorker, fallbackWorker].filter(Boolean)),
+      ...(fallbackWorker ? { fallbackOnRateLimit: fallbackWorker } : {})
     },
+    ...workerConfigForInit({ preferredWorker, fallbackWorker, cwd, timeoutSeconds, args }),
     rateLimitPolicy: {
-      sources: ["openclaw-provider", "codex-cli"],
+      sources: rateLimitSourcesForInit({ scheduler, preferredWorker, fallbackWorker }),
       fallbackWaitSeconds: 14400,
       allowHandoffOnRateLimit: true
     },
@@ -126,7 +151,58 @@ function initTask(taskDir, args) {
   writeJson(join(taskDir, "task.json"), task);
   writeJson(join(taskDir, "checkpoint.json"), checkpoint);
   writeFileSync(join(taskDir, "harness.md"), defaultHarness(template), "utf8");
+  if (args.check) {
+    const health = buildHealthReport(taskDir, { strict: args.strict });
+    console.log(JSON.stringify({
+      initialized: true,
+      taskDir,
+      taskId: task.id,
+      scheduler,
+      worker: preferredWorker,
+      fallbackWorker,
+      health
+    }, null, 2));
+    if (health.status === "fail" && args.strict) process.exitCode = 1;
+    return;
+  }
   console.log(`Initialized ${template} task at ${taskDir}`);
+}
+
+function workerConfigForInit({ preferredWorker, fallbackWorker, cwd, timeoutSeconds, args }) {
+  const workers = new Set([preferredWorker, fallbackWorker].filter(Boolean));
+  const config = {};
+  if (workers.has("codex-cli")) {
+    config.codexWorker = {
+      ...(cwd ? { cwd } : {}),
+      ...(args.model && args.model !== true ? { model: String(args.model) } : {}),
+      ...(args.sandbox && args.sandbox !== true ? { sandbox: String(args.sandbox) } : {}),
+      ...(timeoutSeconds ? { timeoutSeconds } : {})
+    };
+  }
+  if (workers.has("kimi-cli")) {
+    config.kimiWorker = {
+      ...(cwd ? { cwd } : {}),
+      ...(args["kimi-model"] && args["kimi-model"] !== true ? { model: String(args["kimi-model"]) } : {}),
+      ...(timeoutSeconds ? { timeoutSeconds } : {})
+    };
+  }
+  if (workers.has("local-command")) {
+    config.localWorker = {
+      ...(args.command && args.command !== true ? { command: String(args.command) } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(timeoutSeconds ? { timeoutSeconds } : {})
+    };
+  }
+  return config;
+}
+
+function rateLimitSourcesForInit({ scheduler, preferredWorker, fallbackWorker }) {
+  const sources = [];
+  if (scheduler === "openclaw-cron") sources.push("openclaw-provider");
+  for (const worker of [preferredWorker, fallbackWorker]) {
+    if (worker === "codex-cli" || worker === "kimi-cli") sources.push(worker);
+  }
+  return uniqueStrings(sources);
 }
 
 function validateTask(taskDir) {
@@ -569,6 +645,12 @@ function classifyCommand(taskDir, args) {
 }
 
 function healthCheck(taskDir, args) {
+  const report = buildHealthReport(taskDir, args);
+  console.log(JSON.stringify(report, null, 2));
+  if (report.status === "fail" && args.strict) process.exitCode = 1;
+}
+
+function buildHealthReport(taskDir, args = {}) {
   const { task, checkpoint, errors } = loadAndValidate(taskDir);
   const checks = [];
 
@@ -589,13 +671,18 @@ function healthCheck(taskDir, args) {
     });
   }
 
+  const scheduler = normalizeScheduler(task.scheduler?.type || (task.workerPolicy?.preferred === "openclaw-direct-model" ? "openclaw-cron" : "manual"));
+  if (!errors.length) {
+    checks.push(schedulerConfigCheck(task, scheduler));
+  }
+  if (scheduler === "openclaw-cron" || task.workerPolicy?.preferred === "openclaw-direct-model" || (task.workerPolicy?.allowed || []).includes("openclaw-direct-model")) {
+    checks.push(commandCheck("openclaw", ["--version"], "OpenClaw CLI"));
+  }
+
   const allowed = task.workerPolicy?.allowed || [];
   const normalizedAllowed = allowed.map(normalizeWorker);
   const preferred = task.workerPolicy?.preferred || "";
   const normalizedPreferred = normalizeWorker(preferred);
-  if (preferred === "openclaw-direct-model" || allowed.includes("openclaw-direct-model")) {
-    checks.push(commandCheck("openclaw", ["--version"], "OpenClaw CLI"));
-  }
   if (normalizedPreferred === "codex-cli" || normalizedAllowed.includes("codex-cli")) {
     checks.push(commandCheck("codex", ["--version"], "Codex CLI"));
   }
@@ -614,20 +701,25 @@ function healthCheck(taskDir, args) {
     });
   }
 
+  if (!errors.length) {
+    for (const worker of configuredWorkers(task)) {
+      checks.push(workerPlanCheck(taskDir, task, worker));
+    }
+  }
+
   const overall = checks.some((check) => check.status === "fail")
     ? "fail"
     : checks.some((check) => check.status === "warn")
       ? "warn"
       : "pass";
 
-  console.log(JSON.stringify({
+  return {
     status: overall,
     taskId: task.id,
+    scheduler,
     preferredWorker: preferred || null,
     checks
-  }, null, 2));
-
-  if (overall === "fail" && args.strict) process.exitCode = 1;
+  };
 }
 
 function openclawRecipe(taskDir, args) {
@@ -638,15 +730,17 @@ function openclawRecipe(taskDir, args) {
     return;
   }
 
-  const every = String(args.every || "30m");
-  const name = String(args.name || `${task.id}-tick`);
-  const model = String(args.model || "minimax/MiniMax-M2.5");
+  const every = String(args.every || task.scheduler?.every || "30m");
+  const name = String(args.name || task.scheduler?.name || `${task.id}-tick`);
+  const model = String(args.model || task.scheduler?.model || "minimax/MiniMax-M2.5");
   const sessionKey = String(args["session-key"] || `agent:main:cron:${task.id}`);
-  const timeoutSeconds = String(args["timeout-seconds"] || "300");
+  const timeoutSeconds = String(args["timeout-seconds"] || task.scheduler?.timeoutSeconds || "300");
   const tools = String(args.tools || "exec read write");
   const worker = normalizeWorker(args.worker || task.workerPolicy?.preferred || "");
+  const fallbackWorker = normalizeWorker(args["fallback-worker"] || task.workerPolicy?.fallbackOnRateLimit || "");
+  const fallbackFlag = fallbackWorker ? ` --fallback-worker ${shellQuote(fallbackWorker)}` : "";
   const schedulerCommand = isRunnableWorker(worker)
-    ? `node ${shellQuote(relativeCliPath())} run ${shellQuote(taskDir)} --worker ${shellQuote(worker)} --timeout-seconds ${shellQuote(timeoutSeconds)}`
+    ? `node ${shellQuote(relativeCliPath())} run ${shellQuote(taskDir)} --worker ${shellQuote(worker)}${fallbackFlag} --timeout-seconds ${shellQuote(timeoutSeconds)}`
     : `node ${shellQuote(relativeCliPath())} tick ${shellQuote(taskDir)}`;
   const message = isRunnableWorker(worker)
     ? [
@@ -1070,12 +1164,106 @@ function printFallbackRunResult({ taskDir, decision, dryRun, worker, commandPlan
   });
 }
 
+function configuredWorkers(task) {
+  return uniqueStrings([
+    normalizeWorker(task.workerPolicy?.preferred || ""),
+    ...(task.workerPolicy?.allowed || []).map(normalizeWorker),
+    normalizeWorker(task.workerPolicy?.fallbackOnRateLimit || "")
+  ].filter((worker) => isRunnableWorker(worker)));
+}
+
+function schedulerConfigCheck(task, scheduler) {
+  if (scheduler === "openclaw-cron") {
+    return {
+      name: "scheduler-config",
+      status: "pass",
+      message: `scheduler configured: ${scheduler}`,
+      scheduler,
+      every: task.scheduler?.every || "30m"
+    };
+  }
+  if (scheduler === "manual") {
+    return {
+      name: "scheduler-config",
+      status: "pass",
+      message: "scheduler configured: manual",
+      scheduler
+    };
+  }
+  return {
+    name: "scheduler-config",
+    status: "warn",
+    message: `unknown scheduler adapter: ${scheduler}`,
+    scheduler
+  };
+}
+
+function workerPlanCheck(taskDir, task, worker) {
+  const missing = missingWorkerPlanConfig(task, worker);
+  if (missing) {
+    return {
+      name: `worker-plan:${worker}`,
+      status: "warn",
+      message: missing,
+      worker
+    };
+  }
+  try {
+    const plan = buildWorkerCommand(taskDir, task, worker, "", {});
+    return {
+      name: `worker-plan:${worker}`,
+      status: "pass",
+      message: `worker command can be built: ${plan.displayCommand}`,
+      worker,
+      cwd: plan.cwd
+    };
+  } catch (error) {
+    return {
+      name: `worker-plan:${worker}`,
+      status: "warn",
+      message: error.message,
+      worker
+    };
+  }
+}
+
+function missingWorkerPlanConfig(task, worker) {
+  if (worker === "local-command" && !task.localWorker?.command) {
+    return "local-command requires localWorker.command.";
+  }
+  if ((worker === "codex-cli" || worker === "kimi-cli") && !workerCwdValue(task, worker)) {
+    return `${worker} requires context.repoPath, context.repository, or ${workerConfigKey(worker)}.cwd.`;
+  }
+  return null;
+}
+
+function workerCwdValue(task, worker) {
+  if (worker === "codex-cli") return task.codexWorker?.cwd || task.context?.repoPath || task.context?.repository;
+  if (worker === "kimi-cli") return task.kimiWorker?.cwd || task.context?.repoPath || task.context?.repository;
+  if (worker === "local-command") return task.localWorker?.cwd || task.context?.repoPath || task.context?.repository;
+  return null;
+}
+
+function workerConfigKey(worker) {
+  if (worker === "codex-cli") return "codexWorker";
+  if (worker === "kimi-cli") return "kimiWorker";
+  if (worker === "local-command") return "localWorker";
+  return "worker";
+}
+
 function normalizeWorker(worker) {
   const value = String(worker || "").trim();
   if (value === "openclaw-codex-cli") return "codex-cli";
   if (value === "codex") return "codex-cli";
   if (value === "kimi") return "kimi-cli";
   if (value === "local") return "local-command";
+  return value;
+}
+
+function normalizeScheduler(scheduler) {
+  const value = String(scheduler || "").trim();
+  if (value === "openclaw" || value === "openclaw-cron") return "openclaw-cron";
+  if (value === "none" || value === "manual") return "manual";
   return value;
 }
 
@@ -1412,6 +1600,10 @@ function expandHome(path) {
 
 function matchesAny(text, needles) {
   return needles.some((needle) => text.includes(needle));
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set(values.filter(Boolean).map(String)));
 }
 
 function commandCheck(command, args, label) {
