@@ -247,6 +247,8 @@ The harness can run a local command directly with `lth run --worker local-comman
 
 This is an early portfolio project scaffold. The near-term goal is to prove the harness contract with real coding tasks, then generalize to media workflows.
 
+The current hardening review is tracked in [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md). The highest-priority gaps are verified claim checking, interruption-safe persistence, and safer Codex worker defaults.
+
 ---
 
 # Longtask Harness 中文说明

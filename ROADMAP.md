@@ -1,5 +1,7 @@
 # Roadmap
 
+See [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md) for the latest verified hardening review and priority order.
+
 ## 0.1 Contract
 
 - Define canonical task, checkpoint, and run event schemas.
@@ -18,9 +20,11 @@
 
 ## 0.3 Evidence
 
+- Add `lth verify` and block `done` claims that do not satisfy success criteria.
+- Make checkpoint, task, and lock writes interruption-safe.
+- Harden Codex worker defaults and enforce forbidden working directories.
 - Add evidence manifests for tests, screenshots, video clips, transcripts, and benchmark runs.
 - Add run summary generation from JSONL logs.
-- Add "claim verifier" that blocks completion without evidence.
 
 ## 0.4 Portfolio Polish
 
