@@ -4,7 +4,7 @@
   "type": "object",
   "required": ["schemaVersion", "taskId", "status", "nextStep", "updatedAt"],
   "properties": {
-    "schemaVersion": { "type": "integer" },
+    "schemaVersion": { "type": "integer", "const": 1 },
     "taskId": { "type": "string" },
     "status": {
       "type": "string",
@@ -52,7 +52,32 @@
     },
     "evidence": {
       "type": "array",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": { "type": "string" },
+          "path": { "type": "string" },
+          "criterionId": { "type": "string" },
+          "criterion": { "type": "string" },
+          "criteria": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "source": {
+            "type": "string",
+            "enum": ["openclaw-provider", "codex-cli", "kimi-cli", "scheduler", "external-api", "manual"]
+          },
+          "observedAt": { "type": "string" },
+          "command": { "type": "string" },
+          "exitCode": { "type": "number" },
+          "status": { "type": "string" },
+          "text": { "type": "string" },
+          "output": { "type": "string" },
+          "note": { "type": "string" },
+          "summary": { "type": "string" }
+        }
+      }
     },
     "workerCooldowns": {
       "type": "object",
@@ -69,7 +94,19 @@
           },
           "evidence": {
             "type": "array",
-            "items": { "type": "object" }
+            "items": {
+              "type": "object",
+              "required": ["type"],
+              "properties": {
+                "type": { "type": "string" },
+                "path": { "type": "string" },
+                "criterionId": { "type": "string" },
+                "source": { "type": "string" },
+                "observedAt": { "type": "string" },
+                "note": { "type": "string" },
+                "summary": { "type": "string" }
+              }
+            }
           }
         }
       }

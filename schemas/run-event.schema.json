@@ -38,7 +38,31 @@
     },
     "evidence": {
       "type": "array",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": { "type": "string" },
+          "path": { "type": "string" },
+          "criterionId": { "type": "string" },
+          "criteria": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "source": {
+            "type": "string",
+            "enum": ["openclaw-provider", "codex-cli", "kimi-cli", "scheduler", "external-api", "manual"]
+          },
+          "observedAt": { "type": "string" },
+          "command": { "type": "string" },
+          "exitCode": { "type": "number" },
+          "status": { "type": "string" },
+          "text": { "type": "string" },
+          "output": { "type": "string" },
+          "note": { "type": "string" },
+          "summary": { "type": "string" }
+        }
+      }
     }
   }
 }

@@ -4,7 +4,7 @@
   "type": "object",
   "required": ["schemaVersion", "id", "title", "domain", "objective", "successCriteria"],
   "properties": {
-    "schemaVersion": { "type": "integer" },
+    "schemaVersion": { "type": "integer", "const": 1 },
     "id": { "type": "string" },
     "title": { "type": "string" },
     "domain": { "type": "string" },
@@ -50,6 +50,10 @@
               "category": {
                 "type": "string",
                 "enum": ["time", "cost", "safety", "scope", "quality", "privacy", "other"]
+              },
+              "forbiddenCwdPatterns": {
+                "type": "array",
+                "items": { "type": "string" }
               }
             }
           }
@@ -152,6 +156,7 @@
         "fallbackWaitSeconds": { "type": "integer", "minimum": 0 },
         "allowHandoffOnRateLimit": { "type": "boolean" }
       }
-    }
+    },
+    "createdAt": { "type": "string" }
   }
 }

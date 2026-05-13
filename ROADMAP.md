@@ -23,6 +23,7 @@ See [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md) for the latest verifi
 - Add `lth verify` and block `done` claims that do not satisfy success criteria. *(Initial support exists.)*
 - Make checkpoint, task, and lock writes interruption-safe. *(Initial atomic JSON writes and file lock support exists.)*
 - Harden Codex worker defaults and enforce forbidden working directories. *(Initial read-only default and cwd blocklist support exists.)*
+- Wire schema validation and `schemaVersion` migration checks into `loadAndValidate`. *(Initial zero-dependency subset validator exists.)*
 - Add evidence manifests for tests, screenshots, video clips, transcripts, and benchmark runs.
 - Add run summary generation from JSONL logs.
 

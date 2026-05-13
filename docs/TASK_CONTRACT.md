@@ -2,6 +2,8 @@
 
 Longtask Harness uses three canonical files.
 
+The current schema version is `1`. `lth validate`, `lth verify`, `lth next`, `lth run`, `lth record`, and related commands load the JSON schemas under `schemas/` and reject unsupported versions with an explicit migration message.
+
 ## task.json
 
 Defines the intended outcome.
@@ -54,6 +56,15 @@ Important fields:
 For Codex CLI rate limits, `evidence` may include a `codex-session` item whose `path` points at the local `.codex/sessions/...jsonl` trace. Treat that trace as raw recovery evidence; keep the checkpoint focused on status, blocker, next step, and evidence pointers.
 
 `status: "done"` is claim-checked. `lth verify <task-dir>` evaluates every success criterion, and `lth record --status done` refuses to write unless the same verification passes. Command criteria run their target command; `output_contains` criteria search recorded evidence text; manual criteria require evidence with a matching `criterionId`.
+
+Evidence items have a small shared contract:
+
+- `type`: required evidence kind, such as `worker-output`, `codex-session`, or `review-note`.
+- `path`: optional path to an evidence file or external trace.
+- `criterionId`: optional success criterion satisfied by this evidence.
+- `criteria`: optional list of success criterion ids.
+- `observedAt`: optional ISO timestamp for when the evidence was captured.
+- `source`, `command`, `exitCode`, `status`, `text`, `output`, `note`, and `summary`: optional fields used by worker output, manual review, and failure evidence.
 
 ## runs/*.jsonl
 

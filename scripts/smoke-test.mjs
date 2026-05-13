@@ -81,6 +81,29 @@ check("examples validate", () => {
   run(["validate", "examples/video-analysis"]);
 });
 
+check("validate rejects unsupported schema versions", () => withTask((taskDir) => {
+  const taskPath = join(taskDir, "task.json");
+  const task = JSON.parse(readFileSync(taskPath, "utf8"));
+  task.schemaVersion = 2;
+  writeFileSync(taskPath, JSON.stringify(task, null, 2) + "\n", "utf8");
+
+  const result = run(["validate", taskDir], { raw: true, allowFailure: true });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unsupported task\.schemaVersion 2/);
+  assert.match(result.stderr, /migration/);
+}));
+
+check("validate rejects malformed evidence items", () => withTask((taskDir) => {
+  const checkpointPath = join(taskDir, "checkpoint.json");
+  const checkpoint = readCheckpoint(taskDir);
+  checkpoint.evidence = [{ path: "evidence/missing-type.txt" }];
+  writeFileSync(checkpointPath, JSON.stringify(checkpoint, null, 2) + "\n", "utf8");
+
+  const result = run(["validate", taskDir], { raw: true, allowFailure: true });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /checkpoint\.evidence\[0\]\.type is required/);
+}));
+
 check("next returns run for active task", () => {
   const next = run(["next", "examples/coding"], { json: true });
   assert.equal(next.decision, "run");

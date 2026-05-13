@@ -3,8 +3,11 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const VERSION = "0.2.0";
+const SUPPORTED_SCHEMA_VERSION = 1;
+const SCHEMA_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "schemas");
 const DEFAULT_CODEX_SANDBOX = "read-only";
 const DEFAULT_CODEX_FORBIDDEN_CWD_PATTERNS = [
   "~",
@@ -1049,7 +1052,12 @@ Preferred template: \`${template}\`.
 function loadAndValidate(taskDir) {
   const task = readJson(join(taskDir, "task.json"));
   const checkpoint = readJson(join(taskDir, "checkpoint.json"));
-  const errors = [];
+  const errors = [
+    ...validateSchemaVersion(task, "task"),
+    ...validateSchemaVersion(checkpoint, "checkpoint"),
+    ...validateJsonSchema(task, loadSchema("task.schema.json"), "task"),
+    ...validateJsonSchema(checkpoint, loadSchema("checkpoint.schema.json"), "checkpoint")
+  ];
 
   requireString(task, "id", errors);
   requireString(task, "title", errors);
@@ -2045,6 +2053,92 @@ function requireArray(obj, key, errors) {
   if (!Array.isArray(obj[key]) || obj[key].length === 0) errors.push(`missing non-empty array: ${key}`);
 }
 
+function validateSchemaVersion(value, label) {
+  if (value?.schemaVersion === SUPPORTED_SCHEMA_VERSION) return [];
+  if (value?.schemaVersion == null) {
+    return [`${label}.schemaVersion is required; expected ${SUPPORTED_SCHEMA_VERSION}`];
+  }
+  return [`unsupported ${label}.schemaVersion ${value.schemaVersion}; expected ${SUPPORTED_SCHEMA_VERSION}. Add a migration before loading this task.`];
+}
+
+const schemaCache = new Map();
+
+function loadSchema(fileName) {
+  if (!schemaCache.has(fileName)) {
+    schemaCache.set(fileName, readJson(join(SCHEMA_DIR, fileName)));
+  }
+  return schemaCache.get(fileName);
+}
+
+function validateJsonSchema(value, schema, label) {
+  return validateSchemaNode(value, schema, label);
+}
+
+function validateSchemaNode(value, schema, path) {
+  if (!schema || Object.keys(schema).length === 0) return [];
+  if (schema.anyOf) {
+    const branchErrors = schema.anyOf.map((branch) => validateSchemaNode(value, branch, path));
+    return branchErrors.some((errors) => errors.length === 0)
+      ? []
+      : [`${path} does not match any allowed schema: ${branchErrors.map((errors) => errors[0]).filter(Boolean).join("; ")}`];
+  }
+
+  const errors = [];
+  if (Object.hasOwn(schema, "const") && value !== schema.const) {
+    errors.push(`${path} must equal ${JSON.stringify(schema.const)}`);
+  }
+  if (schema.type && !schemaTypeMatches(value, schema.type)) {
+    errors.push(`${path} must be ${schema.type}`);
+    return errors;
+  }
+  if (schema.enum && !schema.enum.includes(value)) {
+    errors.push(`${path} must be one of ${schema.enum.map((item) => JSON.stringify(item)).join(", ")}`);
+  }
+  if (typeof value === "number" && schema.minimum != null && value < schema.minimum) {
+    errors.push(`${path} must be >= ${schema.minimum}`);
+  }
+  if (Array.isArray(value)) {
+    if (schema.minItems != null && value.length < schema.minItems) {
+      errors.push(`${path} must contain at least ${schema.minItems} item(s)`);
+    }
+    if (schema.items) {
+      value.forEach((item, index) => {
+        errors.push(...validateSchemaNode(item, schema.items, `${path}[${index}]`));
+      });
+    }
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const key of schema.required || []) {
+      if (value[key] === undefined) errors.push(`${path}.${key} is required`);
+    }
+    for (const [key, childSchema] of Object.entries(schema.properties || {})) {
+      if (value[key] !== undefined) errors.push(...validateSchemaNode(value[key], childSchema, `${path}.${key}`));
+    }
+    if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+      for (const [key, childValue] of Object.entries(value)) {
+        if (!schema.properties || !Object.hasOwn(schema.properties, key)) {
+          errors.push(...validateSchemaNode(childValue, schema.additionalProperties, `${path}.${key}`));
+        }
+      }
+    } else if (schema.additionalProperties === false) {
+      for (const key of Object.keys(value)) {
+        if (!schema.properties || !Object.hasOwn(schema.properties, key)) {
+          errors.push(`${path}.${key} is not allowed`);
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+function schemaTypeMatches(value, type) {
+  if (type === "array") return Array.isArray(value);
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "null") return value === null;
+  if (type === "object") return value != null && typeof value === "object" && !Array.isArray(value);
+  return typeof value === type;
+}
+
 function readJson(path) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
@@ -2071,9 +2165,16 @@ function writeTextAtomic(path, text) {
 
 function appendRunEvent(taskDir, event) {
   const at = event.at || new Date().toISOString();
+  const normalized = omitUndefined({ ...event, at });
+  const errors = validateJsonSchema(normalized, loadSchema("run-event.schema.json"), "run-event");
+  if (errors.length) fail(`Invalid run event: ${errors.join("; ")}`);
   const runPath = join(taskDir, "runs", `${at.slice(0, 10)}.jsonl`);
   mkdirSync(dirname(runPath), { recursive: true });
-  appendFileSync(runPath, JSON.stringify({ ...event, at }) + "\n");
+  appendFileSync(runPath, JSON.stringify(normalized) + "\n");
+}
+
+function omitUndefined(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
 
 function relativeCliPath() {
