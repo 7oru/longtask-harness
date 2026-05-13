@@ -94,6 +94,10 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "forbiddenCwdPatterns": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "lockTtlSeconds": { "type": "integer", "minimum": 1 },
         "fallbackOnRateLimit": { "type": "string" }
       }
@@ -114,6 +118,10 @@
         "sandbox": {
           "type": "string",
           "enum": ["read-only", "workspace-write", "danger-full-access"]
+        },
+        "forbiddenCwdPatterns": {
+          "type": "array",
+          "items": { "type": "string" }
         },
         "oss": { "type": "boolean" },
         "localProvider": {

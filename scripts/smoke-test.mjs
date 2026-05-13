@@ -23,6 +23,7 @@ function run(args, opts = {}) {
       result.stderr.trim()
     ].filter(Boolean).join("\n"));
   }
+  if (opts.raw) return result;
   if (opts.json) return JSON.parse(result.stdout);
   return result.stdout;
 }
@@ -295,6 +296,60 @@ check("classify routes test failures to paused", () => withTask((taskDir) => {
   assert.equal(result.statusSuggestion, "paused");
 }));
 
+check("verify checks command, output, and manual criteria", () => withTask((taskDir) => {
+  const taskPath = join(taskDir, "task.json");
+  const checkpointPath = join(taskDir, "checkpoint.json");
+  const evidencePath = join(taskDir, "evidence", "verification.txt");
+  const task = JSON.parse(readFileSync(taskPath, "utf8"));
+  const checkpoint = readCheckpoint(taskDir);
+  task.successCriteria = [
+    {
+      id: "cmd-ok",
+      description: "A verification command passes.",
+      metric: "command",
+      target: "node -e \"process.exit(0)\""
+    },
+    {
+      id: "output-ok",
+      description: "Evidence contains the expected output.",
+      metric: "output_contains",
+      target: "verification needle"
+    },
+    {
+      id: "manual-ok",
+      description: "Manual review evidence is linked.",
+      metric: "manual"
+    }
+  ];
+  checkpoint.evidence = [
+    { type: "review-note", path: "evidence/verification.txt", criterionId: "manual-ok" }
+  ];
+  mkdirSync(dirname(evidencePath), { recursive: true });
+  writeFileSync(taskPath, JSON.stringify(task, null, 2) + "\n", "utf8");
+  writeFileSync(checkpointPath, JSON.stringify(checkpoint, null, 2) + "\n", "utf8");
+  writeFileSync(evidencePath, "verification needle\n", "utf8");
+
+  const verify = run(["verify", taskDir], { json: true });
+  assert.equal(verify.status, "pass");
+
+  run(["record", taskDir, "--status", "done", "--note", "verified complete"]);
+  assert.equal(readCheckpoint(taskDir).status, "done");
+}));
+
+check("record done rejects unverified success criteria", () => withTask((taskDir) => {
+  const result = run([
+    "record",
+    taskDir,
+    "--status", "done",
+    "--note", "not really done"
+  ], { raw: true, allowFailure: true });
+  const checkpoint = readCheckpoint(taskDir);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /verification failed/);
+  assert.equal(checkpoint.status, "active");
+}));
+
 check("run local-command executes one bounded slice", () => withTask((taskDir) => {
   const command = [
     "node -e",
@@ -383,6 +438,31 @@ check("run codex-cli links session evidence from failed rate-limit output", () =
   assert.equal(result.classification.class, "rate_limit");
   assert.equal(checkpoint.status, "blocked");
   assert.ok(checkpoint.evidence.some((item) => item.type === "codex-session" && item.path === sessionPath));
+}));
+
+check("run codex-cli defaults to read-only sandbox", () => withTask((taskDir) => {
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "codex-cli",
+    "--cwd", taskDir,
+    "--dry-run"
+  ], { json: true });
+
+  assert.match(result.command, /--sandbox read-only/);
+}));
+
+check("run codex-cli rejects forbidden cwd", () => withTask((taskDir) => {
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "codex-cli",
+    "--cwd", "~/.openclaw",
+    "--dry-run"
+  ], { raw: true, allowFailure: true });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /forbidden cwd/);
 }));
 
 check("run codex-cli falls back to kimi-cli on rate limit", () => withTask((taskDir) => {
@@ -576,9 +656,8 @@ check("run records both cooldowns when fallback also rate limits", () => withTas
 }));
 
 check("run waits when another worker holds the task lock", () => withTask((taskDir) => {
-  const lockDir = join(taskDir, ".lth.lock");
-  mkdirSync(lockDir);
-  writeFileSync(join(lockDir, "lock.json"), JSON.stringify({
+  const lockPath = join(taskDir, ".lth.lock");
+  writeFileSync(lockPath, JSON.stringify({
     owner: "test-worker",
     acquiredAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 60_000).toISOString()
@@ -602,9 +681,8 @@ check("run waits when another worker holds the task lock", () => withTask((taskD
 }));
 
 check("run takes over expired task lock and releases it", () => withTask((taskDir) => {
-  const lockDir = join(taskDir, ".lth.lock");
-  mkdirSync(lockDir);
-  writeFileSync(join(lockDir, "lock.json"), JSON.stringify({
+  const lockPath = join(taskDir, ".lth.lock");
+  writeFileSync(lockPath, JSON.stringify({
     owner: "stale-worker",
     acquiredAt: new Date(Date.now() - 120_000).toISOString(),
     expiresAt: new Date(Date.now() - 60_000).toISOString()
@@ -620,7 +698,7 @@ check("run takes over expired task lock and releases it", () => withTask((taskDi
 
   assert.equal(result.decision, "run");
   assert.equal(result.exitCode, 0);
-  assert.equal(existsSync(lockDir), false);
+  assert.equal(existsSync(lockPath), false);
 }));
 
 check("health returns adapter checks without failing smoke suite", () => {

@@ -1,10 +1,22 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync, appendFileSync, rmSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const VERSION = "0.2.0";
+const DEFAULT_CODEX_SANDBOX = "read-only";
+const DEFAULT_CODEX_FORBIDDEN_CWD_PATTERNS = [
+  "~",
+  "~/.ssh",
+  "~/.ssh/**",
+  "~/.openclaw",
+  "~/.openclaw/**",
+  "~/.claude",
+  "~/.claude/**",
+  "~/.codex",
+  "~/.codex/**"
+];
 
 function main(argv) {
   const [cmd, taskDirArg, ...rest] = argv;
@@ -16,6 +28,7 @@ function main(argv) {
 
   if (cmd === "init" || cmd === "initiate") return initTask(taskDir, parseArgs(rest));
   if (cmd === "validate") return validateTask(taskDir);
+  if (cmd === "verify") return verifyTask(taskDir, parseArgs(rest));
   if (cmd === "next") return printNext(taskDir);
   if (cmd === "tick") return tick(taskDir, parseArgs(rest));
   if (cmd === "run") return runWorker(taskDir, parseArgs(rest));
@@ -36,6 +49,7 @@ Usage:
     [--scheduler openclaw-cron|manual] [--worker codex-cli|kimi-cli|local-command]
     [--fallback-worker kimi-cli] [--cwd <dir>] [--check] [--strict]
   lth validate <task-dir>
+  lth verify <task-dir>
   lth next <task-dir>
   lth tick <task-dir> [--dry-run]
   lth run <task-dir> [--worker local-command|codex-cli|kimi-cli] [--command "..."] [--cwd <dir>]
@@ -150,7 +164,7 @@ function initTask(taskDir, args) {
 
   writeJson(join(taskDir, "task.json"), task);
   writeJson(join(taskDir, "checkpoint.json"), checkpoint);
-  writeFileSync(join(taskDir, "harness.md"), defaultHarness(template), "utf8");
+  writeTextAtomic(join(taskDir, "harness.md"), defaultHarness(template));
   if (args.check) {
     const health = buildHealthReport(taskDir, { strict: args.strict });
     console.log(JSON.stringify({
@@ -214,6 +228,25 @@ function validateTask(taskDir) {
     return;
   }
   console.log(`OK ${task.id}: ${checkpoint.status} -> ${checkpoint.nextStep}`);
+}
+
+function verifyTask(taskDir, args = {}) {
+  const { task, checkpoint, errors } = loadAndValidate(taskDir);
+  if (errors.length) {
+    const report = {
+      status: "fail",
+      taskId: task?.id || null,
+      errors,
+      checks: []
+    };
+    console.log(JSON.stringify(report, null, 2));
+    process.exitCode = 1;
+    return;
+  }
+
+  const report = verifySuccessCriteria(taskDir, task, checkpoint, args);
+  console.log(JSON.stringify(report, null, 2));
+  if (report.status !== "pass") process.exitCode = 1;
 }
 
 function printNext(taskDir) {
@@ -614,7 +647,21 @@ function recordProgress(taskDir, args) {
   const note = args.note || "";
   if (!["active", "paused", "blocked", "done", "needs-human"].includes(status)) fail(`Invalid status: ${status}`);
   const checkpointPath = join(taskDir, "checkpoint.json");
-  const checkpoint = readJson(checkpointPath);
+  const { task, checkpoint, errors } = loadAndValidate(taskDir);
+  if (errors.length) {
+    for (const error of errors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (status === "done") {
+    const verification = verifySuccessCriteria(taskDir, task, checkpoint, args);
+    if (verification.status !== "pass") {
+      console.error("Cannot record done: success criteria verification failed.");
+      console.error(JSON.stringify(verification, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+  }
   const now = new Date().toISOString();
   checkpoint.status = status;
   checkpoint.updatedAt = now;
@@ -655,6 +702,167 @@ function recordProgress(taskDir, args) {
     at: now
   });
   console.log(`Recorded ${status} for ${checkpoint.taskId}`);
+}
+
+function verifySuccessCriteria(taskDir, task, checkpoint, args = {}) {
+  const checkedAt = new Date().toISOString();
+  const criteria = normalizeSuccessCriteria(task.successCriteria);
+  const checks = criteria.map((criterion) => verifyCriterion(taskDir, task, checkpoint, criterion, args));
+  return {
+    status: checks.every((check) => check.status === "pass") ? "pass" : "fail",
+    taskId: task.id,
+    checkedAt,
+    checks
+  };
+}
+
+function normalizeSuccessCriteria(criteria) {
+  return (Array.isArray(criteria) ? criteria : []).map((criterion, index) => {
+    if (typeof criterion === "string") {
+      return {
+        id: slugify(criterion) || `criterion-${index + 1}`,
+        description: criterion,
+        metric: "manual",
+        target: null
+      };
+    }
+    const description = String(criterion?.description || criterion?.id || `criterion ${index + 1}`);
+    return {
+      id: String(criterion?.id || slugify(description) || `criterion-${index + 1}`),
+      description,
+      metric: String(criterion?.metric || "manual"),
+      target: criterion?.target ?? null
+    };
+  });
+}
+
+function verifyCriterion(taskDir, task, checkpoint, criterion, args) {
+  if (criterion.metric === "command") return verifyCommandCriterion(taskDir, task, criterion, args);
+  if (criterion.metric === "output_contains") return verifyOutputContainsCriterion(taskDir, checkpoint, criterion);
+  if (criterion.metric === "manual") return verifyManualCriterion(checkpoint, criterion);
+  return {
+    id: criterion.id,
+    metric: criterion.metric,
+    status: "fail",
+    message: `unsupported success criterion metric: ${criterion.metric}`
+  };
+}
+
+function verifyCommandCriterion(taskDir, task, criterion, args) {
+  const target = criterion.target;
+  const command = typeof target === "string" ? target : target?.command;
+  if (!command) {
+    return {
+      id: criterion.id,
+      metric: criterion.metric,
+      status: "fail",
+      message: "command criterion requires a string target or target.command"
+    };
+  }
+  const cwdValue = typeof target === "object" && target?.cwd
+    ? target.cwd
+    : task.context?.repoPath || task.context?.repository || taskDir;
+  const cwd = resolveWorkerCwd(taskDir, task, cwdValue);
+  const timeoutSeconds = Number((typeof target === "object" && target?.timeoutSeconds) || args["verify-timeout-seconds"] || 300);
+  assertPositiveSeconds(timeoutSeconds, "--verify-timeout-seconds");
+  const result = spawnSync(String(command), [], {
+    cwd,
+    shell: true,
+    encoding: "utf8",
+    timeout: timeoutSeconds * 1000,
+    maxBuffer: 5 * 1024 * 1024
+  });
+  return {
+    id: criterion.id,
+    metric: criterion.metric,
+    status: result.status === 0 && !result.error ? "pass" : "fail",
+    command: String(command),
+    cwd,
+    exitCode: result.status ?? (result.error ? 1 : 0),
+    stdout: truncate(result.stdout || "", 500),
+    stderr: truncate(result.stderr || result.error?.message || "", 500),
+    message: result.status === 0 && !result.error ? "command passed" : "command failed"
+  };
+}
+
+function verifyOutputContainsCriterion(taskDir, checkpoint, criterion) {
+  const target = criterion.target;
+  const expected = expectedOutputNeedles(target);
+  if (!expected.length) {
+    return {
+      id: criterion.id,
+      metric: criterion.metric,
+      status: "fail",
+      message: "output_contains criterion requires target text"
+    };
+  }
+  const texts = evidenceTextsForCriterion(taskDir, checkpoint, target);
+  const missing = expected.filter((needle) => !texts.some((text) => text.includes(needle)));
+  return {
+    id: criterion.id,
+    metric: criterion.metric,
+    status: missing.length ? "fail" : "pass",
+    expected,
+    missing,
+    evidenceCount: texts.length,
+    message: missing.length ? "expected text was not found in evidence" : "expected text found in evidence"
+  };
+}
+
+function verifyManualCriterion(checkpoint, criterion) {
+  const evidence = Array.isArray(checkpoint.evidence) ? checkpoint.evidence : [];
+  const match = evidence.find((item) => evidenceMatchesCriterion(item, criterion));
+  return {
+    id: criterion.id,
+    metric: criterion.metric,
+    status: match ? "pass" : "fail",
+    evidence: match ? { type: match.type || null, path: match.path || null, criterionId: match.criterionId || match.criterion || match.id || null } : null,
+    message: match ? "matching evidence recorded" : `manual criterion requires evidence with criterionId "${criterion.id}"`
+  };
+}
+
+function expectedOutputNeedles(target) {
+  if (typeof target === "string") return [target];
+  if (Array.isArray(target)) return target.map(String);
+  if (target?.contains) return Array.isArray(target.contains) ? target.contains.map(String) : [String(target.contains)];
+  if (target?.text) return [String(target.text)];
+  return [];
+}
+
+function evidenceTextsForCriterion(taskDir, checkpoint, target) {
+  const evidence = Array.isArray(checkpoint.evidence) ? checkpoint.evidence : [];
+  const explicitPaths = typeof target === "object" && target?.path
+    ? [target.path]
+    : [];
+  const pathTexts = explicitPaths.length
+    ? explicitPaths.map((path) => readEvidencePath(taskDir, path)).filter(Boolean)
+    : evidence.map((item) => readEvidenceItemText(taskDir, item)).filter(Boolean);
+  return [
+    ...pathTexts,
+    ...evidence.map((item) => [item.text, item.output, item.note, item.summary].filter(Boolean).join("\n")).filter(Boolean)
+  ];
+}
+
+function readEvidenceItemText(taskDir, item) {
+  if (!item?.path) return "";
+  return readEvidencePath(taskDir, item.path);
+}
+
+function readEvidencePath(taskDir, path) {
+  const fullPath = resolve(taskDir, String(path));
+  if (!existsSync(fullPath)) return "";
+  try {
+    return readFileSync(fullPath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function evidenceMatchesCriterion(item, criterion) {
+  if (!item || typeof item !== "object") return false;
+  if (item.criterionId === criterion.id || item.criterion === criterion.id || item.id === criterion.id) return true;
+  if (Array.isArray(item.criteria) && item.criteria.includes(criterion.id)) return true;
+  return false;
 }
 
 function classifyCommand(taskDir, args) {
@@ -1427,10 +1635,11 @@ function buildCodexCommand(taskDir, task, args) {
     fail("codex-cli requires --cwd, task.codexWorker.cwd, or task.context.repoPath.");
   }
   const cwd = resolveWorkerCwd(taskDir, task, cwdValue);
+  assertCodexCwdAllowed(cwd, task, args);
   const timeoutSeconds = Number(args["timeout-seconds"] || task.codexWorker?.timeoutSeconds || 1800);
   assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
   const commandArgs = ["exec", "--cd", cwd, "--ask-for-approval", "never"];
-  const sandbox = args.sandbox || task.codexWorker?.sandbox || "workspace-write";
+  const sandbox = args.sandbox || task.codexWorker?.sandbox || DEFAULT_CODEX_SANDBOX;
   if (sandbox && sandbox !== true) commandArgs.push("--sandbox", String(sandbox));
   const model = args.model || task.codexWorker?.model;
   if (model && model !== true) commandArgs.push("--model", String(model));
@@ -1448,6 +1657,47 @@ function buildCodexCommand(taskDir, task, args) {
     timeoutMs: timeoutSeconds * 1000,
     displayCommand: ["codex", ...commandArgs.map(shellQuote)].join(" ")
   };
+}
+
+function assertCodexCwdAllowed(cwd, task, args) {
+  const match = codexForbiddenCwdPatterns(task, args).find((pattern) => pathMatchesForbiddenPattern(cwd, pattern));
+  if (match) {
+    fail(`Refusing to start codex-cli in forbidden cwd ${cwd} (matched ${match}).`);
+  }
+}
+
+function codexForbiddenCwdPatterns(task, args) {
+  const argPatterns = args["forbidden-cwd-patterns"] && args["forbidden-cwd-patterns"] !== true
+    ? splitCsv(args["forbidden-cwd-patterns"])
+    : [];
+  const taskPatterns = [
+    ...(Array.isArray(task.codexWorker?.forbiddenCwdPatterns) ? task.codexWorker.forbiddenCwdPatterns : []),
+    ...(Array.isArray(task.workerPolicy?.forbiddenCwdPatterns) ? task.workerPolicy.forbiddenCwdPatterns : []),
+    ...(Array.isArray(task.constraints) ? task.constraints.flatMap((constraint) => Array.isArray(constraint?.forbiddenCwdPatterns) ? constraint.forbiddenCwdPatterns : []) : [])
+  ];
+  return uniqueStrings([
+    ...DEFAULT_CODEX_FORBIDDEN_CWD_PATTERNS,
+    ...taskPatterns,
+    ...argPatterns
+  ]);
+}
+
+function pathMatchesForbiddenPattern(path, pattern) {
+  const normalizedPath = normalizeAbsolutePath(path);
+  const normalizedPattern = normalizeAbsolutePath(expandHome(String(pattern)));
+  if (String(pattern).endsWith("/**")) {
+    const base = normalizeAbsolutePath(expandHome(String(pattern).slice(0, -3)));
+    return normalizedPath === base || normalizedPath.startsWith(`${base}/`);
+  }
+  if (String(pattern).includes("*")) {
+    return globPatternToRegExp(normalizedPattern).test(normalizedPath);
+  }
+  return normalizedPath === normalizedPattern;
+}
+
+function globPatternToRegExp(pattern) {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*");
+  return new RegExp(`^${escaped}$`);
 }
 
 function buildKimiCommand(taskDir, task, args) {
@@ -1482,7 +1732,7 @@ function buildKimiCommand(taskDir, task, args) {
 
 function resolveWorkerCwd(taskDir, task, cwdValue) {
   const value = cwdValue || task.context?.repoPath || task.context?.repository || taskDir;
-  return resolve(taskDir, String(value));
+  return resolve(taskDir, expandHome(String(value)));
 }
 
 function executeWorkerCommand(plan, workerPrompt) {
@@ -1522,7 +1772,7 @@ function writeWorkerOutput(taskDir, record) {
     "## stderr",
     record.stderr || ""
   ].filter((line) => line !== "").join("\n");
-  writeFileSync(fullPath, text, "utf8");
+  writeTextAtomic(fullPath, text);
   return relativePath;
 }
 
@@ -1535,7 +1785,7 @@ function printRunResult(result) {
 }
 
 function acquireRunLock(taskDir, task, args) {
-  const lockDir = join(taskDir, ".lth.lock");
+  const lockPath = join(taskDir, ".lth.lock");
   const now = Date.now();
   const ttlSeconds = Number(args["lock-ttl-seconds"] || task.workerPolicy?.lockTtlSeconds || args["timeout-seconds"] || 1860);
   assertPositiveSeconds(ttlSeconds, "--lock-ttl-seconds");
@@ -1548,24 +1798,16 @@ function acquireRunLock(taskDir, task, args) {
     expiresAt
   };
 
-  try {
-    mkdirSync(lockDir);
-    writeJson(join(lockDir, "lock.json"), info);
-    return { acquired: true, path: lockDir, info };
-  } catch (error) {
-    if (error.code !== "EEXIST") throw error;
+  if (tryWriteLockFile(lockPath, info)) {
+    return { acquired: true, path: lockPath, info };
   }
 
-  const existing = readLockInfo(lockDir);
+  const existing = readLockInfo(lockPath);
   const existingExpiry = Date.parse(existing?.expiresAt || "");
   if (Number.isFinite(existingExpiry) && existingExpiry <= now) {
-    rmSync(lockDir, { recursive: true, force: true });
-    try {
-      mkdirSync(lockDir);
-      writeJson(join(lockDir, "lock.json"), info);
-      return { acquired: true, path: lockDir, info, stoleExpired: existing };
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
+    rmSync(lockPath, { recursive: true, force: true });
+    if (tryWriteLockFile(lockPath, info)) {
+      return { acquired: true, path: lockPath, info, stoleExpired: existing };
     }
   }
 
@@ -1574,9 +1816,9 @@ function acquireRunLock(taskDir, task, args) {
     : ttlSeconds;
   return {
     acquired: false,
-    path: lockDir,
+    path: lockPath,
     waitSeconds,
-    info: existing || { path: lockDir, message: "lock exists but lock.json could not be read" }
+    info: existing || { path: lockPath, message: "lock exists but lock info could not be read" }
   };
 }
 
@@ -1584,9 +1826,32 @@ function releaseRunLock(lock) {
   if (lock?.acquired && lock.path) rmSync(lock.path, { recursive: true, force: true });
 }
 
-function readLockInfo(lockDir) {
+function tryWriteLockFile(lockPath, info) {
+  let fd = null;
   try {
-    return JSON.parse(readFileSync(join(lockDir, "lock.json"), "utf8"));
+    fd = openSync(lockPath, "wx");
+    writeFileSync(fd, JSON.stringify(info, null, 2) + "\n", "utf8");
+    closeSync(fd);
+    return true;
+  } catch (error) {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {}
+      try {
+        unlinkSync(lockPath);
+      } catch {}
+    }
+    if (error.code === "EEXIST" || error.code === "EISDIR") return false;
+    throw error;
+  }
+}
+
+function readLockInfo(lockPath) {
+  try {
+    const stat = statSync(lockPath);
+    const path = stat.isDirectory() ? join(lockPath, "lock.json") : lockPath;
+    return JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return null;
   }
@@ -1722,6 +1987,11 @@ function expandHome(path) {
   return path;
 }
 
+function normalizeAbsolutePath(path) {
+  const resolved = resolve(String(path));
+  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
+}
+
 function matchesAny(text, needles) {
   return needles.some((needle) => text.includes(needle));
 }
@@ -1784,7 +2054,19 @@ function readJson(path) {
 }
 
 function writeJson(path, value) {
-  writeFileSync(path, JSON.stringify(value, null, 2) + "\n", "utf8");
+  writeTextAtomic(path, JSON.stringify(value, null, 2) + "\n");
+}
+
+function writeTextAtomic(path, text) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmpPath, text, "utf8");
+    renameSync(tmpPath, path);
+  } catch (error) {
+    rmSync(tmpPath, { force: true });
+    throw error;
+  }
 }
 
 function appendRunEvent(taskDir, event) {
@@ -1834,6 +2116,13 @@ function splitCsv(value) {
 
 function basenameSafe(path) {
   return path.split(/[\\/]/).filter(Boolean).at(-1)?.replace(/[^a-zA-Z0-9._-]/g, "-") || "task";
+}
+
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function fail(message) {

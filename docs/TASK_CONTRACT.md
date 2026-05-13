@@ -53,6 +53,8 @@ Important fields:
 
 For Codex CLI rate limits, `evidence` may include a `codex-session` item whose `path` points at the local `.codex/sessions/...jsonl` trace. Treat that trace as raw recovery evidence; keep the checkpoint focused on status, blocker, next step, and evidence pointers.
 
+`status: "done"` is claim-checked. `lth verify <task-dir>` evaluates every success criterion, and `lth record --status done` refuses to write unless the same verification passes. Command criteria run their target command; `output_contains` criteria search recorded evidence text; manual criteria require evidence with a matching `criterionId`.
+
 ## runs/*.jsonl
 
 Defines append-only execution events.
@@ -78,8 +80,12 @@ Defines operating rules for human and AI workers.
 
 This is where project-specific safety rules, verification commands, and handoff expectations live.
 
-## .lth.lock/
+## .lth.lock
 
-Runtime-only lease directory created by `lth run` before a worker starts.
+Runtime-only lease file created atomically by `lth run` before a worker starts.
 
-This directory is not durable task state. It prevents overlapping workers from writing the same checkpoint and run log at the same time. If the lock has not expired, a second `lth run` returns `decision: "wait"`. If the lock has expired, the next run removes it and creates a fresh lease.
+This file is not durable task state. It prevents overlapping workers from writing the same checkpoint and run log at the same time. If the lock has not expired, a second `lth run` returns `decision: "wait"`. If the lock has expired, the next run removes it and creates a fresh lease.
+
+## Codex safety defaults
+
+`codex-cli` runs with `--sandbox read-only` unless `task.codexWorker.sandbox` or `--sandbox` explicitly opts into a broader sandbox. The harness refuses to start Codex in default forbidden working directories such as the home directory, `~/.ssh`, `~/.openclaw`, `~/.claude`, and `~/.codex`. Tasks can add `forbiddenCwdPatterns` under `codexWorker`, `workerPolicy`, or individual constraints.

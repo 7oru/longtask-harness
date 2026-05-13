@@ -160,6 +160,12 @@ node src/cli.js classify tasks/my-coding-task \
   --text "Codex CLI returned 429 Too Many Requests. Retry after 120 seconds."
 ```
 
+Verify success criteria before claiming completion:
+
+```bash
+node src/cli.js verify tasks/my-coding-task
+```
+
 Run adapter health checks:
 
 ```bash
@@ -174,7 +180,7 @@ node src/cli.js run tasks/my-coding-task \
   --command "ollama run qwen2.5-coder:32b"
 ```
 
-`lth run` creates a short-lived `.lth.lock/` directory before starting a worker. If another worker already holds the lock, the command returns `decision: "wait"` and does not start a second worker. Expired locks are cleared automatically.
+`lth run` creates a short-lived `.lth.lock` file before starting a worker. If another worker already holds the lock, the command returns `decision: "wait"` and does not start a second worker. Expired locks are cleared automatically.
 
 Run one bounded worker slice with Codex CLI:
 
@@ -246,6 +252,8 @@ The harness can run a local command directly with `lth run --worker local-comman
 ## Status
 
 This is an early portfolio project scaffold. The near-term goal is to prove the harness contract with real coding tasks, then generalize to media workflows.
+
+The current hardening review is tracked in [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md). The first hardening pass adds verified `done` claims, interruption-safe JSON writes and lock acquisition, and safer Codex worker defaults.
 
 ---
 
@@ -361,6 +369,12 @@ node src/cli.js classify tasks/my-coding-task \
   --text "Codex CLI returned 429 Too Many Requests. Retry after 120 seconds."
 ```
 
+声称完成前验证 success criteria：
+
+```bash
+node src/cli.js verify tasks/my-coding-task
+```
+
 运行 adapter health checks：
 
 ```bash
@@ -375,7 +389,7 @@ node src/cli.js run tasks/my-coding-task \
   --command "ollama run qwen2.5-coder:32b"
 ```
 
-`lth run` 启动 worker 前会创建短生命周期的 `.lth.lock/` 目录。如果另一个 worker 已经持有 lock，命令会返回 `decision: "wait"`，不会启动第二个 worker。过期 lock 会自动清理并接管。
+`lth run` 启动 worker 前会创建短生命周期的 `.lth.lock` 文件。如果另一个 worker 已经持有 lock，命令会返回 `decision: "wait"`，不会启动第二个 worker。过期 lock 会自动清理并接管。
 
 用 Codex CLI 运行一个 bounded worker slice：
 
@@ -514,6 +528,7 @@ harness 也可以通过 `lth run --worker local-command` 直接运行本地命�
 - `lth record --status blocked --blocked-until <iso> --reason rate_limit`
 - `lth next` 输出 `decision: run | wait | done | needs-human`
 - `lth tick` 做单次调度判断和 worker prompt 生成
+- `lth verify` 检查 `successCriteria`；`record --status done` 必须先通过 verify
 - `lth run --worker local-command|codex-cli` 做单次调度、执行、输出捕获、分类、checkpoint 更新和 run log 记录
 - OpenClaw cron recipe generator
 - Codex CLI worker prompt generator
