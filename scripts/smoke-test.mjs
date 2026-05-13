@@ -429,9 +429,150 @@ check("run codex-cli falls back to kimi-cli on rate limit", () => withTask((task
   assert.equal(result.fallback.worker, "kimi-cli");
   assert.equal(result.fallback.exitCode, 0);
   assert.equal(checkpoint.status, "paused");
+  assert.ok(checkpoint.workerCooldowns["codex-cli"].blockedUntil);
   assert.ok(checkpoint.evidence.some((item) => item.type === "codex-session" && item.path === sessionPath));
   assert.ok(checkpoint.evidence.some((item) => item.path === result.fallback.outputPath));
   assert.ok(events.some((event) => event.type === "rate_limited" && event.status === "fallback"));
+}));
+
+check("run returns to codex-cli after worker cooldown expires", () => withTask((taskDir) => {
+  const binDir = mkdtempSync(join(taskDir, "fake-bin-"));
+  const sessionPath = join(taskDir, ".codex", "sessions", "cooldown-codex-session.jsonl");
+  const codexPath = join(binDir, "codex");
+  const kimiPath = join(binDir, "kimi");
+  const countPath = join(taskDir, "codex-count.txt");
+  mkdirSync(dirname(sessionPath), { recursive: true });
+  writeFileSync(sessionPath, "{}\n", "utf8");
+  writeFileSync(countPath, "0", "utf8");
+  writeFileSync(codexPath, [
+    "#!/usr/bin/env node",
+    "const fs = require('fs');",
+    `const countPath = ${JSON.stringify(countPath)};`,
+    "const count = Number(fs.readFileSync(countPath, 'utf8')) + 1;",
+    "fs.writeFileSync(countPath, String(count));",
+    "if (count === 1) {",
+    `  console.error("Codex CLI returned 429 Too Many Requests. Retry after 3600 seconds. Session: ${sessionPath}");`,
+    "  process.exit(1);",
+    "}",
+    "process.stdin.resume();",
+    "console.log('codex resumed after cooldown');"
+  ].join("\n"), "utf8");
+  writeFileSync(kimiPath, [
+    "#!/usr/bin/env node",
+    "process.stdin.resume();",
+    "console.log('kimi handled cooldown window');"
+  ].join("\n"), "utf8");
+  chmodSync(codexPath, 0o755);
+  chmodSync(kimiPath, 0o755);
+  const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}` };
+
+  const first = run([
+    "run",
+    taskDir,
+    "--worker", "codex-cli",
+    "--fallback-worker", "kimi-cli",
+    "--cwd", taskDir,
+    "--timeout-seconds", "5"
+  ], { json: true, env });
+  const second = run([
+    "run",
+    taskDir,
+    "--worker", "codex-cli",
+    "--fallback-worker", "kimi-cli",
+    "--cwd", taskDir,
+    "--timeout-seconds", "5"
+  ], { json: true, env });
+  const checkpoint = readCheckpoint(taskDir);
+  checkpoint.workerCooldowns["codex-cli"].blockedUntil = new Date(Date.now() - 1000).toISOString();
+  writeFileSync(join(taskDir, "checkpoint.json"), JSON.stringify(checkpoint, null, 2) + "\n", "utf8");
+  const third = run([
+    "run",
+    taskDir,
+    "--worker", "codex-cli",
+    "--fallback-worker", "kimi-cli",
+    "--cwd", taskDir,
+    "--timeout-seconds", "5"
+  ], { json: true, env });
+  const finalCheckpoint = readCheckpoint(taskDir);
+
+  assert.equal(first.worker, "codex-cli");
+  assert.equal(first.fallback.worker, "kimi-cli");
+  assert.equal(second.worker, "kimi-cli");
+  assert.equal(second.requestedWorker, "codex-cli");
+  assert.equal(second.degradedFrom, "codex-cli");
+  assert.equal(readFileSync(countPath, "utf8"), "2");
+  assert.equal(third.worker, "codex-cli");
+  assert.equal(third.exitCode, 0);
+  assert.equal(finalCheckpoint.workerCooldowns, undefined);
+}));
+
+check("run records worker cooldown and blocks when no fallback is configured", () => withTask((taskDir) => {
+  const binDir = mkdtempSync(join(taskDir, "fake-bin-"));
+  const kimiPath = join(binDir, "kimi");
+  writeFileSync(kimiPath, [
+    "#!/usr/bin/env node",
+    "console.error('Kimi returned 429 Too Many Requests. Retry after 10 seconds.');",
+    "process.exit(1);"
+  ].join("\n"), "utf8");
+  chmodSync(kimiPath, 0o755);
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "kimi-cli",
+    "--cwd", taskDir,
+    "--timeout-seconds", "5"
+  ], {
+    json: true,
+    allowFailure: true,
+    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }
+  });
+  const checkpoint = readCheckpoint(taskDir);
+
+  assert.equal(result.worker, "kimi-cli");
+  assert.equal(result.classification.class, "rate_limit");
+  assert.equal(checkpoint.status, "blocked");
+  assert.ok(checkpoint.blockedUntil);
+  assert.ok(checkpoint.workerCooldowns["kimi-cli"].blockedUntil);
+}));
+
+check("run records both cooldowns when fallback also rate limits", () => withTask((taskDir) => {
+  const binDir = mkdtempSync(join(taskDir, "fake-bin-"));
+  const codexPath = join(binDir, "codex");
+  const kimiPath = join(binDir, "kimi");
+  writeFileSync(codexPath, [
+    "#!/usr/bin/env node",
+    "console.error('Codex CLI returned 429 Too Many Requests. Retry after 20 seconds.');",
+    "process.exit(1);"
+  ].join("\n"), "utf8");
+  writeFileSync(kimiPath, [
+    "#!/usr/bin/env node",
+    "console.error('Kimi returned 429 Too Many Requests. Retry after 10 seconds.');",
+    "process.exit(1);"
+  ].join("\n"), "utf8");
+  chmodSync(codexPath, 0o755);
+  chmodSync(kimiPath, 0o755);
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "codex-cli",
+    "--fallback-worker", "kimi-cli",
+    "--cwd", taskDir,
+    "--timeout-seconds", "5"
+  ], {
+    json: true,
+    allowFailure: true,
+    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }
+  });
+  const checkpoint = readCheckpoint(taskDir);
+
+  assert.equal(result.classification.class, "rate_limit");
+  assert.equal(result.fallback.classification.class, "rate_limit");
+  assert.equal(checkpoint.status, "blocked");
+  assert.ok(checkpoint.workerCooldowns["codex-cli"].blockedUntil);
+  assert.ok(checkpoint.workerCooldowns["kimi-cli"].blockedUntil);
+  assert.equal(checkpoint.blockedUntil, checkpoint.workerCooldowns["kimi-cli"].blockedUntil);
 }));
 
 check("run waits when another worker holds the task lock", () => withTask((taskDir) => {

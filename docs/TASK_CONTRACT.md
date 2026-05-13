@@ -49,6 +49,7 @@ Important fields:
 - `activeFiles`: files or artifacts most relevant to the next run.
 - `openQuestions`: unresolved questions that may affect the next slice.
 - `evidence`: references to tests, screenshots, logs, clips, or review notes.
+- `workerCooldowns`: per-worker cooldown windows, usually from rate limits. A task may keep running on a fallback worker while `codex-cli` is cooling down, then return to `codex-cli` after its `blockedUntil` expires.
 
 For Codex CLI rate limits, `evidence` may include a `codex-session` item whose `path` points at the local `.codex/sessions/...jsonl` trace. Treat that trace as raw recovery evidence; keep the checkpoint focused on status, blocker, next step, and evidence pointers.
 

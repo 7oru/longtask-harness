@@ -410,13 +410,50 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
       at: now.toISOString()
     });
   }
+  const clearedCooldowns = clearExpiredWorkerCooldowns(checkpoint, now);
+  for (const workerName of clearedCooldowns) {
+    checkpoint.updatedAt = now.toISOString();
+    events.push({
+      type: "checkpoint_written",
+      status: checkpoint.status,
+      worker: workerName,
+      reason: "worker cooldown expired",
+      at: now.toISOString()
+    });
+  }
 
   const workerPrompt = buildWorkerPrompt(task, checkpoint);
-  const worker = normalizeWorker(args.worker || task.workerPolicy?.preferred || "local-command");
+  const requestedWorker = normalizeWorker(args.worker || task.workerPolicy?.preferred || "local-command");
+  const selection = selectWorkerForRun({ requestedWorker, task, args, checkpoint, now });
+  if (selection.wait) {
+    events.push({
+      type: "run_skipped",
+      reason: selection.reason,
+      worker: requestedWorker,
+      blockedUntil: selection.cooldown?.blockedUntil || null,
+      waitSeconds: selection.waitSeconds,
+      at: now.toISOString()
+    });
+    if (!dryRun) appendEvents(taskDir, events);
+    return printRunResult({
+      decision: "wait",
+      reason: selection.reason,
+      dryRun,
+      status: checkpoint.status,
+      waitSeconds: selection.waitSeconds,
+      worker: null,
+      requestedWorker,
+      workerCooldown: selection.cooldown
+    });
+  }
+  const worker = selection.worker;
   const commandPlan = buildWorkerCommand(taskDir, task, worker, workerPrompt, args);
   events.push({
     type: "worker_prompt_generated",
     worker,
+    requestedWorker,
+    degradedFrom: selection.degradedFrom || undefined,
+    blockedUntil: selection.cooldown?.blockedUntil || undefined,
     at: now.toISOString()
   });
 
@@ -428,13 +465,16 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
       status: checkpoint.status,
       waitSeconds: decision.waitSeconds,
       worker,
+      requestedWorker,
+      degradedFrom: selection.degradedFrom || undefined,
+      workerCooldown: selection.cooldown || undefined,
       command: commandPlan.displayCommand,
       cwd: commandPlan.cwd,
       workerPrompt
     });
   }
 
-  if (wasBlocked) writeJson(join(taskDir, "checkpoint.json"), checkpoint);
+  if (wasBlocked || clearedCooldowns.length) writeJson(join(taskDir, "checkpoint.json"), checkpoint);
   appendEvents(taskDir, events);
 
   const startedAt = new Date().toISOString();
@@ -497,7 +537,7 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
   } else {
     const combinedOutput = [result.stdout, result.stderr, result.error?.message || ""].filter(Boolean).join("\n");
     classification = classifyFailure(combinedOutput, {
-      source: worker === "codex-cli" ? "codex-cli" : "manual",
+      source: worker,
       exitCode: result.status,
       task
     });
@@ -523,6 +563,7 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
         taskDir,
         task,
         args,
+        primaryWorker: worker,
         worker: fallbackWorker,
         workerPrompt,
         beforeUpdatedAt,
@@ -542,6 +583,7 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
       });
     }
     finalCheckpoint = readJson(join(taskDir, "checkpoint.json"));
+    applyWorkerCooldown(finalCheckpoint, worker, classification, primaryFailureEvidence, finishedAt);
     applyClassification(taskDir, finalCheckpoint, classification, combinedOutput, {
       evidence: primaryFailureEvidence
     });
@@ -554,6 +596,9 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
     status: readJson(join(taskDir, "checkpoint.json")).status,
     waitSeconds: decision.waitSeconds,
     worker,
+    requestedWorker,
+    degradedFrom: selection.degradedFrom || undefined,
+    workerCooldown: selection.cooldown || undefined,
     command: commandPlan.displayCommand,
     cwd: commandPlan.cwd,
     exitCode: result.status,
@@ -1025,10 +1070,83 @@ function fallbackWorkerForRateLimit({ worker, classification, task, args }) {
   return fallback && fallback !== worker ? fallback : null;
 }
 
+function selectWorkerForRun({ requestedWorker, task, args, checkpoint, now }) {
+  const cooldown = activeWorkerCooldown(checkpoint, requestedWorker, now);
+  if (!cooldown) return { worker: requestedWorker };
+  const fallback = normalizeWorker(args["fallback-worker"] || task.workerPolicy?.fallbackOnRateLimit || "");
+  if (fallback && fallback !== requestedWorker) {
+    return {
+      worker: fallback,
+      degradedFrom: requestedWorker,
+      cooldown
+    };
+  }
+  return {
+    wait: true,
+    reason: `${requestedWorker} is rate-limited until ${cooldown.blockedUntil}`,
+    waitSeconds: Math.max(1, Math.ceil((Date.parse(cooldown.blockedUntil) - now.getTime()) / 1000)),
+    cooldown
+  };
+}
+
+function activeWorkerCooldown(checkpoint, worker, now = new Date()) {
+  const cooldown = checkpoint.workerCooldowns?.[worker];
+  if (!cooldown?.blockedUntil) return null;
+  const blockedUntil = Date.parse(cooldown.blockedUntil);
+  if (!Number.isFinite(blockedUntil) || blockedUntil <= now.getTime()) return null;
+  return cooldown;
+}
+
+function clearExpiredWorkerCooldowns(checkpoint, now = new Date()) {
+  const cooldowns = checkpoint.workerCooldowns;
+  if (!cooldowns || typeof cooldowns !== "object") return [];
+  const cleared = [];
+  for (const [worker, cooldown] of Object.entries(cooldowns)) {
+    const blockedUntil = Date.parse(cooldown?.blockedUntil || "");
+    if (!Number.isFinite(blockedUntil) || blockedUntil <= now.getTime()) {
+      delete cooldowns[worker];
+      cleared.push(worker);
+    }
+  }
+  if (Object.keys(cooldowns).length === 0) delete checkpoint.workerCooldowns;
+  return cleared;
+}
+
+function applyWorkerCooldown(checkpoint, worker, classification, evidence, observedAt) {
+  if (!worker || classification?.class !== "rate_limit" || !classification.blockedUntil) return;
+  checkpoint.workerCooldowns = checkpoint.workerCooldowns && typeof checkpoint.workerCooldowns === "object"
+    ? checkpoint.workerCooldowns
+    : {};
+  checkpoint.workerCooldowns[worker] = {
+    type: "rate_limit",
+    source: worker,
+    message: classification.summary,
+    observedAt,
+    blockedUntil: classification.blockedUntil,
+    retryAfterSeconds: classification.retryAfterSeconds,
+    evidence: normalizeEvidence(evidence, observedAt)
+  };
+}
+
+function mergeRateLimitClassificationFromCooldowns(classification, cooldowns) {
+  const blockedUntilValues = Object.values(cooldowns || {})
+    .map((cooldown) => Date.parse(cooldown?.blockedUntil || ""))
+    .filter(Number.isFinite);
+  if (!blockedUntilValues.length) return classification;
+  const earliestReset = new Date(Math.min(...blockedUntilValues)).toISOString();
+  return {
+    ...classification,
+    blockedUntil: earliestReset,
+    statusSuggestion: "blocked",
+    summary: "All attempted workers are rate-limited; wait for the earliest worker cooldown to reopen."
+  };
+}
+
 function executeFallbackWorker({
   taskDir,
   task,
   args,
+  primaryWorker,
   worker,
   workerPrompt,
   beforeUpdatedAt,
@@ -1096,6 +1214,7 @@ function executeFallbackWorker({
       ...primaryEvidence,
       fallbackOutputEvidence
     ];
+    applyWorkerCooldown(checkpoint, primaryWorker, primaryClassification, primaryEvidence, fallbackFinishedAt);
     const beforeEvidenceLength = Array.isArray(checkpoint.evidence) ? checkpoint.evidence.length : 0;
     checkpoint.evidence = appendEvidenceItems(checkpoint.evidence, evidenceItems);
     if (checkpoint.updatedAt === beforeUpdatedAt) {
@@ -1130,6 +1249,11 @@ function executeFallbackWorker({
       task
     });
     const checkpoint = readJson(join(taskDir, "checkpoint.json"));
+    applyWorkerCooldown(checkpoint, primaryWorker, primaryClassification, primaryEvidence, fallbackFinishedAt);
+    applyWorkerCooldown(checkpoint, worker, classification, [fallbackOutputEvidence], fallbackFinishedAt);
+    if (classification.class === "rate_limit") {
+      classification = mergeRateLimitClassificationFromCooldowns(classification, checkpoint.workerCooldowns);
+    }
     applyClassification(taskDir, checkpoint, classification, combinedOutput, {
       evidence: [...primaryEvidence, fallbackOutputEvidence]
     });

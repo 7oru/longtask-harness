@@ -54,6 +54,26 @@
       "type": "array",
       "items": { "type": "object" }
     },
+    "workerCooldowns": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "source": { "type": "string" },
+          "message": { "type": "string" },
+          "observedAt": { "type": "string" },
+          "blockedUntil": { "type": "string" },
+          "retryAfterSeconds": {
+            "anyOf": [{ "type": "number" }, { "type": "null" }]
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "object" }
+          }
+        }
+      }
+    },
     "updatedAt": { "type": "string" }
   }
 }

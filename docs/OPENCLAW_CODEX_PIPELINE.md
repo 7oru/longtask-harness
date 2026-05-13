@@ -144,4 +144,6 @@ Or configure the task contract:
 }
 ```
 
-The fallback receives the same bounded worker prompt. If Kimi succeeds, the task is checkpointed as `paused` with evidence for both the original Codex rate limit and the Kimi output. If Kimi also fails, the fallback output is classified and the checkpoint is updated from that final failure.
+The fallback receives the same bounded worker prompt. If Kimi succeeds, the task is checkpointed as `paused` with evidence for both the original Codex rate limit and the Kimi output. The Codex reset time is stored under `checkpoint.workerCooldowns["codex-cli"]`; future runs use Kimi while that cooldown is active, then automatically return to Codex after the cooldown expires.
+
+If no fallback is configured, the task is marked `blocked` and the rate-limited worker gets a cooldown entry. If Kimi also hits a rate limit, both workers get cooldown entries and the task is blocked until the earliest worker reset time.

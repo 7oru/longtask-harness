@@ -483,6 +483,7 @@ paused + scheduler tick -> active
 Rate limit 时不应该把整段聊天全部塞进 checkpoint，而应该分层保存：
 
 - `checkpoint.json`：保存当前 phase、下一步、`blockedUntil`、blocker、active files、open questions 和 evidence 引用。
+- `checkpoint.workerCooldowns`：保存单个 worker 的临时 cooldown，例如 `codex-cli` rate limit reset 时间；任务可以在这段时间降级到 fallback worker。
 - `runs/*.jsonl`：保存 append-only 事件流，例如 run started、step completed、command result、failure classified。
 - `evidence/handoff-*.md`：保存给下一个人或 AI worker 读的短摘要。
 - Codex session trace：当 `codex-cli` 遇到 rate limit 时，checkpoint 的 `evidence` 可以记录本地 `.codex/sessions/...jsonl` 路径，作为必要时深挖的原始轨迹。
