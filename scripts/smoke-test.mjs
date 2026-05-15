@@ -373,6 +373,47 @@ check("record done rejects unverified success criteria", () => withTask((taskDir
   assert.equal(checkpoint.status, "active");
 }));
 
+check("evidence records a manifest and satisfies manual criteria", () => withTask((taskDir) => {
+  const taskPath = join(taskDir, "task.json");
+  const task = JSON.parse(readFileSync(taskPath, "utf8"));
+  task.successCriteria = [{
+    id: "reviewed",
+    description: "A manual review note exists.",
+    metric: "manual"
+  }];
+  writeFileSync(taskPath, JSON.stringify(task, null, 2) + "\n", "utf8");
+
+  const result = run([
+    "evidence",
+    taskDir,
+    "--type", "review-note",
+    "--criterion-id", "reviewed",
+    "--summary", "Manual review confirms the slice.",
+    "--status", "pass"
+  ], { json: true });
+  const checkpoint = readCheckpoint(taskDir);
+  const events = runEvents(taskDir);
+
+  assert.equal(result.recorded, true);
+  assert.match(result.manifestPath, /^evidence\/review-note-manifest-/);
+  assert.equal(existsSync(join(taskDir, result.manifestPath)), true);
+  assert.ok(checkpoint.evidence.some((item) => item.criterionId === "reviewed" && item.manifestPath === result.manifestPath));
+  assert.ok(events.some((event) => event.type === "evidence_recorded"));
+  assert.equal(run(["verify", taskDir], { json: true }).status, "pass");
+}));
+
+check("evidence rejects unsupported types", () => withTask((taskDir) => {
+  const result = run([
+    "evidence",
+    taskDir,
+    "--type", "unknown-kind",
+    "--summary", "bad"
+  ], { raw: true, allowFailure: true });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unsupported evidence type/);
+}));
+
 check("run local-command executes one bounded slice", () => withTask((taskDir) => {
   const command = [
     "node -e",

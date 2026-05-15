@@ -15,6 +15,7 @@
         "worker_failed",
         "failure_classified",
         "progress_recorded",
+        "evidence_recorded",
         "rate_limited",
         "checkpoint_written",
         "handoff_written",
@@ -44,6 +45,7 @@
         "properties": {
           "type": { "type": "string" },
           "path": { "type": "string" },
+          "manifestPath": { "type": "string" },
           "criterionId": { "type": "string" },
           "criteria": {
             "type": "array",

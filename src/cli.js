@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const VERSION = "0.2.0";
 const SUPPORTED_SCHEMA_VERSION = 1;
 const SCHEMA_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "schemas");
+const EVIDENCE_TYPES = ["test", "screenshot", "video-clip", "transcript", "benchmark", "review-note", "worker-output", "codex-session", "handoff", "artifact"];
 const DEFAULT_CODEX_SANDBOX = "read-only";
 const DEFAULT_CODEX_FORBIDDEN_CWD_PATTERNS = [
   "~",
@@ -36,6 +37,7 @@ function main(argv) {
   if (cmd === "tick") return tick(taskDir, parseArgs(rest));
   if (cmd === "run") return runWorker(taskDir, parseArgs(rest));
   if (cmd === "record") return recordProgress(taskDir, parseArgs(rest));
+  if (cmd === "evidence") return recordEvidence(taskDir, parseArgs(rest));
   if (cmd === "classify") return classifyCommand(taskDir, parseArgs(rest));
   if (cmd === "health") return healthCheck(taskDir, parseArgs(rest));
   if (cmd === "openclaw-recipe") return openclawRecipe(taskDir, parseArgs(rest));
@@ -61,6 +63,8 @@ Usage:
   lth record <task-dir> --status active|paused|blocked|done|needs-human --note "..."
     [--blocked-until <iso>] [--reason rate_limit|auth_error|test_failure|missing_context|external|manual|unknown]
     [--source openclaw-provider|codex-cli|kimi-cli|scheduler|external-api|manual]
+  lth evidence <task-dir> --type test|screenshot|video-clip|transcript|benchmark|review-note
+    [--path <path>] [--criterion-id <id>] [--status pass|fail] [--summary "..."]
   lth classify <task-dir> (--text "..."|--file <path>) [--source ...] [--exit-code <n>]
     [--codex-session-path <path>] [--record]
   lth health <task-dir>
@@ -705,6 +709,108 @@ function recordProgress(taskDir, args) {
     at: now
   });
   console.log(`Recorded ${status} for ${checkpoint.taskId}`);
+}
+
+function recordEvidence(taskDir, args) {
+  const { task, checkpoint, errors } = loadAndValidate(taskDir);
+  if (errors.length) {
+    for (const error of errors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const now = args["observed-at"] && args["observed-at"] !== true
+    ? String(args["observed-at"])
+    : new Date().toISOString();
+  assertIsoDate(now, "--observed-at");
+  const evidence = buildEvidenceItem(args, now);
+  const manifestPath = evidenceManifestPath(args, evidence, now);
+  const checkpointEvidence = {
+    ...evidence,
+    manifestPath
+  };
+  const evidenceErrors = validateEvidenceItem(checkpointEvidence, "evidence");
+  if (evidenceErrors.length) {
+    for (const error of evidenceErrors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const manifest = {
+    schemaVersion: SUPPORTED_SCHEMA_VERSION,
+    taskId: task.id,
+    recordedAt: now,
+    evidence: checkpointEvidence
+  };
+  const manifestErrors = validateJsonSchema(manifest, loadSchema("evidence-manifest.schema.json"), "evidence-manifest");
+  if (manifestErrors.length) {
+    for (const error of manifestErrors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+  writeJson(join(taskDir, manifestPath), manifest);
+
+  checkpoint.evidence = appendEvidenceItems(checkpoint.evidence, [checkpointEvidence]);
+  checkpoint.updatedAt = now;
+  writeJson(join(taskDir, "checkpoint.json"), checkpoint);
+  appendRunEvent(taskDir, {
+    type: "evidence_recorded",
+    status: checkpoint.status,
+    evidence: [checkpointEvidence],
+    note: evidence.summary || evidence.note || evidence.path || manifestPath,
+    at: now
+  });
+  appendRunEvent(taskDir, {
+    type: "checkpoint_written",
+    status: checkpoint.status,
+    reason: "evidence recorded",
+    at: now
+  });
+
+  console.log(JSON.stringify({
+    recorded: true,
+    taskId: task.id,
+    evidence: checkpointEvidence,
+    manifestPath
+  }, null, 2));
+}
+
+function buildEvidenceItem(args, observedAt) {
+  if (!args.type || args.type === true) fail("evidence requires --type.");
+  const type = String(args.type);
+  if (!EVIDENCE_TYPES.includes(type)) {
+    fail(`Unsupported evidence type: ${type}. Expected one of ${EVIDENCE_TYPES.join(", ")}.`);
+  }
+  return omitUndefined({
+    type,
+    path: stringArg(args.path),
+    manifestPath: undefined,
+    criterionId: stringArg(args["criterion-id"]),
+    criteria: args.criteria && args.criteria !== true ? splitCsv(args.criteria) : undefined,
+    source: stringArg(args.source),
+    observedAt,
+    command: stringArg(args.command),
+    exitCode: args["exit-code"] && args["exit-code"] !== true ? Number(args["exit-code"]) : undefined,
+    status: stringArg(args.status),
+    text: stringArg(args.text),
+    output: stringArg(args.output),
+    note: stringArg(args.note),
+    summary: stringArg(args.summary)
+  });
+}
+
+function evidenceManifestPath(args, evidence, observedAt) {
+  if (args["manifest-path"] && args["manifest-path"] !== true) return String(args["manifest-path"]);
+  const stamp = observedAt.replace(/[:.]/g, "-");
+  return join("evidence", `${evidence.type}-manifest-${stamp}.json`);
+}
+
+function validateEvidenceItem(item, label) {
+  return validateSchemaNode(item, evidenceItemSchema(), label);
+}
+
+function evidenceItemSchema() {
+  return loadSchema("checkpoint.schema.json").properties.evidence.items;
 }
 
 function verifySuccessCriteria(taskDir, task, checkpoint, args = {}) {
@@ -2213,6 +2319,10 @@ function assertPositiveSeconds(value, flag) {
 
 function splitCsv(value) {
   return String(value).split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function stringArg(value) {
+  return value && value !== true ? String(value) : undefined;
 }
 
 function basenameSafe(path) {

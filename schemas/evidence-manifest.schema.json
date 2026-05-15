@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Longtask evidence manifest",
+  "type": "object",
+  "required": ["schemaVersion", "taskId", "recordedAt", "evidence"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "taskId": { "type": "string" },
+    "recordedAt": { "type": "string" },
+    "evidence": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string" },
+        "path": { "type": "string" },
+        "manifestPath": { "type": "string" },
+        "criterionId": { "type": "string" },
+        "criterion": { "type": "string" },
+        "criteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source": {
+          "type": "string",
+          "enum": ["openclaw-provider", "codex-cli", "kimi-cli", "scheduler", "external-api", "manual"]
+        },
+        "observedAt": { "type": "string" },
+        "command": { "type": "string" },
+        "exitCode": { "type": "number" },
+        "status": { "type": "string" },
+        "text": { "type": "string" },
+        "output": { "type": "string" },
+        "note": { "type": "string" },
+        "summary": { "type": "string" }
+      }
+    }
+  }
+}

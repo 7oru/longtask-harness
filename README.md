@@ -166,6 +166,15 @@ node src/cli.js classify tasks/my-coding-task \
   --text "Codex CLI returned 429 Too Many Requests. Retry after 120 seconds."
 ```
 
+Record structured evidence:
+
+```bash
+node src/cli.js evidence tasks/my-coding-task \
+  --type review-note \
+  --criterion-id changes-logged \
+  --summary "Reviewed the run log and linked the behavior change."
+```
+
 Verify success criteria before claiming completion:
 
 ```bash
@@ -222,6 +231,7 @@ The smoke suite copies example tasks into temporary directories and verifies bot
 - expired `blockedUntil` reopens the task and clears the blocker
 - `classify` detects rate limits, auth errors, test failures, and missing context
 - `classify --record` updates checkpoint state and run events
+- `evidence` records a manifest, updates checkpoint evidence, and appends run events
 - `verify` checks command, output, and manual success criteria
 - `record --status done` rejects unverified completion claims
 - schema validation rejects unsupported `schemaVersion` values and malformed evidence

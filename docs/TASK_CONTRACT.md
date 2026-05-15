@@ -61,6 +61,7 @@ Evidence items have a small shared contract:
 
 - `type`: required evidence kind, such as `worker-output`, `codex-session`, or `review-note`.
 - `path`: optional path to an evidence file or external trace.
+- `manifestPath`: optional path to the JSON manifest written by `lth evidence`.
 - `criterionId`: optional success criterion satisfied by this evidence.
 - `criteria`: optional list of success criterion ids.
 - `observedAt`: optional ISO timestamp for when the evidence was captured.
@@ -84,6 +85,23 @@ Important event types:
 - `checkpoint_written`: the harness or worker persisted resumable state.
 - `handoff_written`: a human-readable handoff note was written.
 - `needs_human`: automation stopped because human judgment is required.
+- `evidence_recorded`: `lth evidence` wrote a manifest and appended it to checkpoint evidence.
+
+## evidence manifests
+
+`lth evidence <task-dir>` records structured evidence under `evidence/` and appends the same item to `checkpoint.evidence`.
+
+```bash
+node src/cli.js evidence tasks/my-coding-task \
+  --type test \
+  --path evidence/test-output.txt \
+  --criterion-id tests-pass \
+  --status pass \
+  --command "npm test" \
+  --summary "Smoke suite passed."
+```
+
+Supported evidence types are `test`, `screenshot`, `video-clip`, `transcript`, `benchmark`, `review-note`, `worker-output`, `codex-session`, `handoff`, and `artifact`.
 
 ## harness.md
 

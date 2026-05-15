@@ -58,6 +58,7 @@
         "properties": {
           "type": { "type": "string" },
           "path": { "type": "string" },
+          "manifestPath": { "type": "string" },
           "criterionId": { "type": "string" },
           "criterion": { "type": "string" },
           "criteria": {
@@ -100,6 +101,7 @@
               "properties": {
                 "type": { "type": "string" },
                 "path": { "type": "string" },
+                "manifestPath": { "type": "string" },
                 "criterionId": { "type": "string" },
                 "source": { "type": "string" },
                 "observedAt": { "type": "string" },

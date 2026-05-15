@@ -128,6 +128,15 @@ node src/cli.js classify tasks/my-coding-task \
   --text "Codex CLI returned 429 Too Many Requests. Retry after 120 seconds."
 ```
 
+记录结构化 evidence：
+
+```bash
+node src/cli.js evidence tasks/my-coding-task \
+  --type review-note \
+  --criterion-id changes-logged \
+  --summary "Reviewed the run log and linked the behavior change."
+```
+
 声称完成前验证 success criteria：
 
 ```bash
@@ -184,6 +193,7 @@ smoke suite 会把 example task 复制到临时目录里测试，覆盖 happy pa
 - 已过期的 `blockedUntil` 会重新打开任务并清空 blocker。
 - `classify` 会识别 rate limit、auth error、test failure 和 missing context。
 - `classify --record` 会更新 checkpoint state 和 run events。
+- `evidence` 会写入 manifest、更新 checkpoint evidence，并追加 run events。
 - `verify` 会检查 command、output 和 manual success criteria。
 - `record --status done` 会拒绝未验证的完成声明。
 - schema validation 会拒绝不支持的 `schemaVersion` 和格式错误的 evidence。
