@@ -119,6 +119,10 @@ check("tick --dry-run generates a prompt without writing logs", () => withTask((
   assert.equal(tick.decision, "run");
   assert.equal(tick.dryRun, true);
   assert.match(tick.workerPrompt, /Continue exactly one bounded slice/);
+  assert.match(tick.workerPrompt, /Task directory:/);
+  assert.match(tick.workerPrompt, /Success criteria:/);
+  assert.match(tick.workerPrompt, /Hard constraints:/);
+  assert.match(tick.workerPrompt, /Evidence expectations:/);
   assert.equal(after, before);
 }));
 
