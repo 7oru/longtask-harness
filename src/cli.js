@@ -45,6 +45,8 @@ function main(argv) {
   if (cmd === "evidence") return recordEvidence(taskDir, parseArgs(rest));
   if (cmd === "classify") return classifyCommand(taskDir, parseArgs(rest));
   if (cmd === "health") return healthCheck(taskDir, parseArgs(rest));
+  if (cmd === "summary") return summarizeRuns(taskDir, parseArgs(rest));
+  if (cmd === "tail") return tailRuns(taskDir, parseArgs(rest));
   if (cmd === "openclaw-recipe") return openclawRecipe(taskDir, parseArgs(rest));
   if (cmd === "help") return help();
 
@@ -73,6 +75,8 @@ Usage:
   lth classify <task-dir> (--text "..."|--file <path>) [--source ...] [--exit-code <n>]
     [--codex-session-path <path>] [--record]
   lth health <task-dir>
+  lth summary <task-dir>
+  lth tail <task-dir> [--limit <n>] [--type <event-type>]
   lth openclaw-recipe <task-dir> [--every 30m] [--name longtask-tick]
 `);
 }
@@ -996,6 +1000,66 @@ function healthCheck(taskDir, args) {
   const report = buildHealthReport(taskDir, args);
   console.log(JSON.stringify(report, null, 2));
   if (report.status === "fail" && args.strict) process.exitCode = 1;
+}
+
+function summarizeRuns(taskDir, args = {}) {
+  const { task, checkpoint, errors } = loadAndValidate(taskDir);
+  if (errors.length) {
+    for (const error of errors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+  const events = readRunEvents(taskDir);
+  const eventCounts = countBy(events, (event) => event.type || "unknown");
+  const workerCounts = countBy(events.filter((event) => event.worker), (event) => event.worker);
+  const rateLimits = events
+    .filter((event) => event.type === "rate_limited")
+    .map((event) => ({
+      at: event.at,
+      status: event.status || null,
+      reason: event.reason || null,
+      worker: event.worker || null,
+      blockedUntil: event.blockedUntil || null,
+      source: event.blocker?.source || null
+    }));
+  const latestEvents = events.slice(-Number(args.limit || 5));
+  console.log(JSON.stringify({
+    taskId: task.id,
+    status: checkpoint.status,
+    currentPhase: checkpoint.currentPhase || null,
+    nextStep: checkpoint.nextStep,
+    blockedUntil: checkpoint.blockedUntil,
+    blocker: checkpoint.blocker,
+    evidenceCount: Array.isArray(checkpoint.evidence) ? checkpoint.evidence.length : 0,
+    totalEvents: events.length,
+    eventCounts,
+    workerCounts,
+    rateLimits,
+    lastEvent: events.at(-1) || null,
+    latestEvents
+  }, null, 2));
+}
+
+function tailRuns(taskDir, args = {}) {
+  const { task, errors } = loadAndValidate(taskDir);
+  if (errors.length) {
+    for (const error of errors) console.error(`- ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+  const limit = Number(args.limit || 20);
+  assertPositiveSeconds(limit, "--limit");
+  const type = args.type && args.type !== true ? String(args.type) : null;
+  const events = readRunEvents(taskDir)
+    .filter((event) => !type || event.type === type)
+    .slice(-limit);
+  console.log(JSON.stringify({
+    taskId: task.id,
+    limit,
+    type,
+    count: events.length,
+    events
+  }, null, 2));
 }
 
 function buildHealthReport(taskDir, args = {}) {
@@ -1993,6 +2057,36 @@ function appendRunEvent(taskDir, event) {
   const runPath = join(taskDir, "runs", `${at.slice(0, 10)}.jsonl`);
   mkdirSync(dirname(runPath), { recursive: true });
   appendFileSync(runPath, JSON.stringify(normalized) + "\n");
+}
+
+function readRunEvents(taskDir) {
+  const runsDir = join(taskDir, "runs");
+  if (!existsSync(runsDir)) return [];
+  return readdirSync(runsDir)
+    .filter((file) => file.endsWith(".jsonl"))
+    .sort()
+    .flatMap((file) => {
+      const path = join(runsDir, file);
+      return readFileSync(path, "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line, index) => {
+          try {
+            return JSON.parse(line);
+          } catch (error) {
+            fail(`Cannot parse run event ${path}:${index + 1}: ${error.message}`);
+          }
+        });
+    })
+    .sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
+}
+
+function countBy(items, keyFn) {
+  return items.reduce((counts, item) => {
+    const key = keyFn(item);
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {});
 }
 
 function omitUndefined(value) {

@@ -846,6 +846,27 @@ check("health returns adapter checks without failing smoke suite", () => {
   assert.ok(names.includes("codex-cli"));
 });
 
+check("summary and tail report run events", () => withTask((taskDir) => {
+  run([
+    "record",
+    taskDir,
+    "--status", "paused",
+    "--note", "Paused after observability check."
+  ]);
+  run(["tick", taskDir]);
+
+  const summary = run(["summary", taskDir], { json: true });
+  const tail = run(["tail", taskDir, "--limit", "1", "--type", "progress_recorded"], { json: true });
+
+  assert.equal(summary.taskId, "coding-example");
+  assert.equal(summary.status, "paused");
+  assert.ok(summary.totalEvents >= 3);
+  assert.ok(summary.eventCounts.progress_recorded >= 1);
+  assert.ok(summary.lastEvent);
+  assert.equal(tail.count, 1);
+  assert.equal(tail.events[0].type, "progress_recorded");
+}));
+
 check("openclaw-recipe emits a cron command", () => {
   const recipe = run(["openclaw-recipe", "examples/coding", "--every", "30m"], { json: true });
 
