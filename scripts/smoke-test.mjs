@@ -507,6 +507,37 @@ check("run local-command classifies failed worker output", () => withTask((taskD
   assert.ok(types.includes("checkpoint_written"));
 }));
 
+check("run preserves worker-authored nextStep on failure", () => withTask((taskDir) => {
+  const checkpointPath = join(taskDir, "checkpoint.json");
+  const recoveryStep = "Inspect parser retry fixture before resuming.";
+  const command = [
+    "node -e",
+    JSON.stringify([
+      "const fs = require('fs');",
+      `const checkpointPath = ${JSON.stringify(checkpointPath)};`,
+      "const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));",
+      `checkpoint.nextStep = ${JSON.stringify(recoveryStep)};`,
+      "checkpoint.updatedAt = new Date().toISOString();",
+      "fs.writeFileSync(checkpointPath, JSON.stringify(checkpoint, null, 2) + '\\n');",
+      "console.error('AssertionError: tests failed after worker checkpoint update.');",
+      "process.exit(1);"
+    ].join(""))
+  ].join(" ");
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "local-command",
+    "--command", command,
+    "--timeout-seconds", "5"
+  ], { json: true, allowFailure: true });
+  const checkpoint = readCheckpoint(taskDir);
+
+  assert.equal(result.classification.class, "test_failure");
+  assert.equal(checkpoint.status, "paused");
+  assert.equal(checkpoint.nextStep, recoveryStep);
+}));
+
 check("run codex-cli links session evidence from failed rate-limit output", () => withTask((taskDir) => {
   const binDir = mkdtempSync(join(taskDir, "fake-bin-"));
   const sessionPath = join(taskDir, ".codex", "sessions", "fake-codex-session.jsonl");

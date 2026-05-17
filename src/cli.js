@@ -626,7 +626,8 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
     finalCheckpoint = readJson(join(taskDir, "checkpoint.json"));
     applyWorkerCooldown(finalCheckpoint, worker, classification, primaryFailureEvidence, finishedAt);
     applyClassification(taskDir, finalCheckpoint, classification, combinedOutput, {
-      evidence: primaryFailureEvidence
+      evidence: primaryFailureEvidence,
+      preserveNextStep: finalCheckpoint.updatedAt !== beforeUpdatedAt
     });
   }
 
@@ -1245,7 +1246,9 @@ function applyClassification(taskDir, checkpoint, result, text, opts = {}) {
   const evidence = normalizeEvidence(opts.evidence, now);
   checkpoint.status = result.statusSuggestion;
   checkpoint.updatedAt = now;
-  checkpoint.nextStep = nextStepForClassification(result);
+  if (!opts.preserveNextStep || !checkpoint.nextStep?.trim()) {
+    checkpoint.nextStep = nextStepForClassification(result);
+  }
   checkpoint.blockedUntil = result.blockedUntil;
   checkpoint.blocker = result.class === "success" ? null : {
     type: result.class,
@@ -1470,7 +1473,8 @@ function executeFallbackWorker({
       classification = mergeRateLimitClassificationFromCooldowns(classification, checkpoint.workerCooldowns);
     }
     applyClassification(taskDir, checkpoint, classification, combinedOutput, {
-      evidence: [...primaryEvidence, fallbackOutputEvidence]
+      evidence: [...primaryEvidence, fallbackOutputEvidence],
+      preserveNextStep: checkpoint.updatedAt !== beforeUpdatedAt
     });
     process.exitCode = result.status;
   }
