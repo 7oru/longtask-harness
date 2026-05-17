@@ -5,6 +5,10 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyFailure } from "./core/classification.js";
+import { buildWorkerPrompt, normalizeSuccessCriteria } from "./core/prompt.js";
+import { decideNext } from "./core/state.js";
+import { buildOpenClawRecipe } from "./schedulers/openclaw.js";
+import { configuredWorkers, missingWorkerPlanConfig, normalizeScheduler, normalizeWorker } from "./workers/registry.js";
 
 const VERSION = "0.2.0";
 const SUPPORTED_SCHEMA_VERSION = 1;
@@ -827,26 +831,6 @@ function verifySuccessCriteria(taskDir, task, checkpoint, args = {}) {
   };
 }
 
-function normalizeSuccessCriteria(criteria) {
-  return (Array.isArray(criteria) ? criteria : []).map((criterion, index) => {
-    if (typeof criterion === "string") {
-      return {
-        id: slugify(criterion) || `criterion-${index + 1}`,
-        description: criterion,
-        metric: "manual",
-        target: null
-      };
-    }
-    const description = String(criterion?.description || criterion?.id || `criterion ${index + 1}`);
-    return {
-      id: String(criterion?.id || slugify(description) || `criterion-${index + 1}`),
-      description,
-      metric: String(criterion?.metric || "manual"),
-      target: criterion?.target ?? null
-    };
-  });
-}
-
 function verifyCriterion(taskDir, task, checkpoint, criterion, args) {
   if (criterion.metric === "command") return verifyCommandCriterion(taskDir, task, criterion, args);
   if (criterion.metric === "output_contains") return verifyOutputContainsCriterion(taskDir, checkpoint, criterion);
@@ -1094,48 +1078,7 @@ function openclawRecipe(taskDir, args) {
     return;
   }
 
-  const every = String(args.every || task.scheduler?.every || "30m");
-  const name = String(args.name || task.scheduler?.name || `${task.id}-tick`);
-  const model = String(args.model || task.scheduler?.model || "minimax/MiniMax-M2.5");
-  const sessionKey = String(args["session-key"] || `agent:main:cron:${task.id}`);
-  const timeoutSeconds = String(args["timeout-seconds"] || task.scheduler?.timeoutSeconds || "300");
-  const tools = String(args.tools || "exec read write");
-  const worker = normalizeWorker(args.worker || task.workerPolicy?.preferred || "");
-  const fallbackWorker = normalizeWorker(args["fallback-worker"] || task.workerPolicy?.fallbackOnRateLimit || "");
-  const fallbackFlag = fallbackWorker ? ` --fallback-worker ${shellQuote(fallbackWorker)}` : "";
-  const schedulerCommand = isRunnableWorker(worker)
-    ? `node ${shellQuote(relativeCliPath())} run ${shellQuote(taskDir)} --worker ${shellQuote(worker)}${fallbackFlag} --timeout-seconds ${shellQuote(timeoutSeconds)}`
-    : `node ${shellQuote(relativeCliPath())} tick ${shellQuote(taskDir)}`;
-  const message = isRunnableWorker(worker)
-    ? [
-      `Run: ${schedulerCommand}.`,
-      "Report the JSON result and stop."
-    ].join(" ")
-    : [
-      `Run: ${schedulerCommand}.`,
-      "If the decision is wait, done, or needs-human, stop after reporting the decision.",
-      "If the decision is run, start exactly one bounded worker slice using the generated workerPrompt.",
-      "Before stopping, update checkpoint.json and append run events."
-    ].join(" ");
-
-  const lines = [
-    "openclaw cron add \\",
-    `  --name ${shellQuote(name)} \\`,
-    `  --every ${shellQuote(every)} \\`,
-    "  --session isolated \\",
-    `  --session-key ${shellQuote(sessionKey)} \\`,
-    `  --model ${shellQuote(model)} \\`,
-    `  --tools ${shellQuote(tools)} \\`,
-    `  --timeout-seconds ${shellQuote(timeoutSeconds)} \\`,
-    `  --message ${shellQuote(message)}`
-  ];
-
-  console.log(JSON.stringify({
-    taskId: task.id,
-    command: lines.join("\n"),
-    message,
-    schedule: { every, name, sessionKey, model, timeoutSeconds, tools, worker, schedulerCommand }
-  }, null, 2));
+  console.log(JSON.stringify(buildOpenClawRecipe(taskDir, task, args, relativeCliPath()), null, 2));
 }
 
 function defaultHarness(template) {
@@ -1186,148 +1129,6 @@ function loadAndValidate(taskDir) {
   }
   if (!existsSync(join(taskDir, "harness.md"))) errors.push("missing harness.md");
   return { task, checkpoint, errors };
-}
-
-function decideNext(checkpoint, now = new Date()) {
-  if (checkpoint.status === "done") {
-    return { decision: "done", reason: "task is complete", waitSeconds: 0 };
-  }
-  if (checkpoint.status === "needs-human") {
-    return { decision: "needs-human", reason: "checkpoint requires human input", waitSeconds: 0 };
-  }
-  if (checkpoint.blocker?.requiresHuman) {
-    return { decision: "needs-human", reason: "blocker requires human input", waitSeconds: 0 };
-  }
-  if (checkpoint.status === "blocked") {
-    if (!checkpoint.blockedUntil) {
-      return { decision: "needs-human", reason: "blocked without blockedUntil", waitSeconds: 0 };
-    }
-    const blockedUntil = new Date(checkpoint.blockedUntil);
-    if (Number.isNaN(blockedUntil.getTime())) {
-      return { decision: "needs-human", reason: "invalid blockedUntil", waitSeconds: 0 };
-    }
-    if (blockedUntil > now) {
-      return {
-        decision: "wait",
-        reason: "blocked window has not reopened",
-        waitSeconds: Math.ceil((blockedUntil.getTime() - now.getTime()) / 1000)
-      };
-    }
-    return { decision: "run", reason: "blocked window reopened", waitSeconds: 0 };
-  }
-  return { decision: "run", reason: `checkpoint status is ${checkpoint.status}`, waitSeconds: 0 };
-}
-
-function buildWorkerPrompt(taskDir, task, checkpoint) {
-  const hardConstraints = normalizeConstraints(task.constraints).filter((constraint) => constraint.type !== "soft");
-  const contextLines = formatContext(task.context);
-  const cooldownLines = formatWorkerCooldowns(checkpoint.workerCooldowns);
-  return [
-    "Read task.json, checkpoint.json, and harness.md before doing work.",
-    "Continue exactly one bounded slice.",
-    "Respect constraints, success criteria, blockedUntil, and the worker policy.",
-    "Before stopping, update checkpoint.json and append run evidence.",
-    "",
-    `Task directory: ${taskDir}`,
-    `Task: ${task.title}`,
-    `Objective: ${task.objective}`,
-    `Current phase: ${checkpoint.currentPhase || "unspecified"}`,
-    `Next step: ${checkpoint.nextStep}`,
-    "",
-    "Success criteria:",
-    ...normalizeSuccessCriteria(task.successCriteria).map((criterion) => `- ${formatSuccessCriterion(criterion)}`),
-    ...formatPromptSection("Hard constraints:", hardConstraints.map((constraint) => `- ${formatConstraint(constraint)}`)),
-    ...formatPromptSection("Key context:", contextLines),
-    checkpoint.blockedUntil ? `Blocked until: ${checkpoint.blockedUntil}` : "",
-    checkpoint.blocker ? `Recent blocker: ${formatBlocker(checkpoint.blocker)}` : "",
-    ...formatPromptSection("Worker cooldowns:", cooldownLines),
-    ...formatPromptSection("Recent evidence:", recentEvidence(checkpoint.evidence).map((item) => `- ${formatEvidence(item)}`)),
-    "",
-    "Evidence expectations:",
-    "- Capture tests, worker output, screenshots, transcripts, or review notes that support the slice.",
-    "- Link evidence to success criteria with criterionId or criteria when it verifies completion.",
-    checkpoint.lastCompletedStep ? `Last completed step: ${checkpoint.lastCompletedStep}` : "",
-    checkpoint.activeFiles?.length ? `Active files: ${checkpoint.activeFiles.join(", ")}` : "",
-    checkpoint.openQuestions?.length ? `Open questions: ${checkpoint.openQuestions.join("; ")}` : ""
-  ].filter(Boolean).join("\n");
-}
-
-function formatPromptSection(title, lines) {
-  return lines.length ? [title, ...lines] : [];
-}
-
-function normalizeConstraints(constraints) {
-  return (Array.isArray(constraints) ? constraints : []).map((constraint, index) => {
-    if (typeof constraint === "string") {
-      return {
-        id: slugify(constraint) || `constraint-${index + 1}`,
-        description: constraint,
-        type: "hard",
-        category: "scope"
-      };
-    }
-    return {
-      id: String(constraint?.id || `constraint-${index + 1}`),
-      description: String(constraint?.description || constraint?.id || `constraint ${index + 1}`),
-      type: String(constraint?.type || "hard"),
-      category: String(constraint?.category || "other")
-    };
-  });
-}
-
-function formatSuccessCriterion(criterion) {
-  const target = criterion.target == null ? "" : ` target=${formatInlineValue(criterion.target)}`;
-  return `${criterion.id}: ${criterion.description} (${criterion.metric}${target})`;
-}
-
-function formatConstraint(constraint) {
-  return `${constraint.id}: ${constraint.description} (${constraint.type}/${constraint.category})`;
-}
-
-function formatContext(context = {}) {
-  return [
-    context.summary ? `- Summary: ${context.summary}` : "",
-    context.repoPath ? `- Repo path: ${context.repoPath}` : "",
-    context.repository ? `- Repository: ${context.repository}` : "",
-    ...(Array.isArray(context.files) && context.files.length ? [`- Files: ${context.files.join(", ")}`] : []),
-    ...(Array.isArray(context.links) && context.links.length ? [`- Links: ${context.links.join(", ")}`] : []),
-    ...(Array.isArray(context.notes) ? context.notes.map((note) => `- Note: ${note}`) : [])
-  ].filter(Boolean);
-}
-
-function formatBlocker(blocker) {
-  return [
-    blocker.type || "unknown",
-    blocker.source ? `from ${blocker.source}` : "",
-    blocker.message ? `- ${blocker.message}` : "",
-    blocker.retryAfterSeconds != null ? `(retryAfterSeconds: ${blocker.retryAfterSeconds})` : ""
-  ].filter(Boolean).join(" ");
-}
-
-function formatWorkerCooldowns(cooldowns = {}) {
-  return Object.entries(cooldowns || {}).map(([worker, cooldown]) => {
-    const until = cooldown?.blockedUntil || "unknown";
-    const message = cooldown?.message ? ` - ${cooldown.message}` : "";
-    return `- ${worker}: blocked until ${until}${message}`;
-  });
-}
-
-function recentEvidence(evidence = []) {
-  return Array.isArray(evidence) ? evidence.slice(-5) : [];
-}
-
-function formatEvidence(item) {
-  return [
-    item.type || "evidence",
-    item.path || item.manifestPath || "",
-    item.criterionId ? `(criterion: ${item.criterionId})` : "",
-    item.summary || item.note || ""
-  ].filter(Boolean).join(" ");
-}
-
-function formatInlineValue(value) {
-  if (typeof value === "string") return value;
-  return JSON.stringify(value);
 }
 
 function readClassifierInput(args) {
@@ -1602,14 +1403,6 @@ function printFallbackRunResult({ taskDir, decision, dryRun, worker, commandPlan
   });
 }
 
-function configuredWorkers(task) {
-  return uniqueStrings([
-    normalizeWorker(task.workerPolicy?.preferred || ""),
-    ...(task.workerPolicy?.allowed || []).map(normalizeWorker),
-    normalizeWorker(task.workerPolicy?.fallbackOnRateLimit || "")
-  ].filter((worker) => isRunnableWorker(worker)));
-}
-
 function schedulerConfigCheck(task, scheduler) {
   if (scheduler === "openclaw-cron") {
     return {
@@ -1665,55 +1458,11 @@ function workerPlanCheck(taskDir, task, worker) {
   }
 }
 
-function missingWorkerPlanConfig(task, worker) {
-  if (worker === "local-command" && !task.localWorker?.command) {
-    return "local-command requires localWorker.command.";
-  }
-  if ((worker === "codex-cli" || worker === "kimi-cli") && !workerCwdValue(task, worker)) {
-    return `${worker} requires context.repoPath, context.repository, or ${workerConfigKey(worker)}.cwd.`;
-  }
-  return null;
-}
-
-function workerCwdValue(task, worker) {
-  if (worker === "codex-cli") return task.codexWorker?.cwd || task.context?.repoPath || task.context?.repository;
-  if (worker === "kimi-cli") return task.kimiWorker?.cwd || task.context?.repoPath || task.context?.repository;
-  if (worker === "local-command") return task.localWorker?.cwd || task.context?.repoPath || task.context?.repository;
-  return null;
-}
-
-function workerConfigKey(worker) {
-  if (worker === "codex-cli") return "codexWorker";
-  if (worker === "kimi-cli") return "kimiWorker";
-  if (worker === "local-command") return "localWorker";
-  return "worker";
-}
-
-function normalizeWorker(worker) {
-  const value = String(worker || "").trim();
-  if (value === "openclaw-codex-cli") return "codex-cli";
-  if (value === "codex") return "codex-cli";
-  if (value === "kimi") return "kimi-cli";
-  if (value === "local") return "local-command";
-  return value;
-}
-
-function normalizeScheduler(scheduler) {
-  const value = String(scheduler || "").trim();
-  if (value === "openclaw" || value === "openclaw-cron") return "openclaw-cron";
-  if (value === "none" || value === "manual") return "manual";
-  return value;
-}
-
 function buildWorkerCommand(taskDir, task, worker, workerPrompt, args) {
   if (worker === "local-command") return buildLocalCommand(taskDir, task, args);
   if (worker === "codex-cli") return buildCodexCommand(taskDir, task, args);
   if (worker === "kimi-cli") return buildKimiCommand(taskDir, task, args);
   fail(`Unsupported worker adapter: ${worker}`);
-}
-
-function isRunnableWorker(worker) {
-  return ["codex-cli", "local-command", "kimi-cli"].includes(worker);
 }
 
 function buildLocalCommand(taskDir, task, args) {
@@ -2294,13 +2043,6 @@ function stringArg(value) {
 
 function basenameSafe(path) {
   return path.split(/[\\/]/).filter(Boolean).at(-1)?.replace(/[^a-zA-Z0-9._-]/g, "-") || "task";
-}
-
-function slugify(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
 }
 
 function fail(message) {

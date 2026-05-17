@@ -106,15 +106,14 @@ Use adapters for tool-specific behavior:
 
 ## Current Mapping
 
-Current code in `src/cli.js` already contains these adapter boundaries, but they are implemented as functions:
+Current code keeps command orchestration in `src/cli.js`, with the first pure modules extracted around stable boundaries:
 
-- Scheduler-ish: `openclawRecipe`, `tick`, `healthCheck`.
-- Worker-ish: `buildLocalCommand`, `buildCodexCommand`, `executeWorkerCommand`.
-- Kimi fallback: `buildKimiCommand` and rate-limit fallback execution after `codex-cli` failures.
-- Codex-specific evidence: Codex session trace detection for rate-limited `codex-cli` runs.
-- Core state machine: `decideNext`, `runWorkerUnlocked`, `applyClassification`, lock handling, checkpoint writes, and run events.
+- Core: `src/core/state.js`, `src/core/prompt.js`, `src/core/classification.js`.
+- Worker registry: `src/workers/registry.js` normalizes worker names and shared worker readiness checks.
+- Scheduler recipe generation: `src/schedulers/openclaw.js`.
+- Still in CLI: worker command execution, Kimi fallback flow, Codex session evidence detection, lock handling, checkpoint writes, and run events.
 
-The next refactor should extract modules before introducing inheritance:
+The next refactor should keep extracting behavior before introducing inheritance:
 
 ```text
 src/core/
