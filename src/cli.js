@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { classifyFailure } from "./core/classification.js";
 
 const VERSION = "0.2.0";
 const SUPPORTED_SCHEMA_VERSION = 1;
@@ -1239,114 +1240,6 @@ function readClassifierInput(args) {
   fail("classify requires --text or --file.");
 }
 
-function classifyFailure(text, opts = {}) {
-  const normalized = String(text || "");
-  const lower = normalized.toLowerCase();
-  const exitCode = opts.exitCode == null || opts.exitCode === true ? null : Number(opts.exitCode);
-  const source = inferFailureSource(lower, opts.source);
-  const retryAfterSeconds = parseRetryAfterSeconds(normalized);
-  const fallbackWaitSeconds = opts.task?.rateLimitPolicy?.fallbackWaitSeconds ?? 14400;
-
-  if (matchesAny(lower, [
-    "rate limit",
-    "ratelimit",
-    "rate_limit",
-    "too many requests",
-    "quota exceeded",
-    "quota_exceeded",
-    "429",
-    "try again later",
-    "retry after"
-  ])) {
-    const waitSeconds = retryAfterSeconds ?? fallbackWaitSeconds;
-    return {
-      class: "rate_limit",
-      source,
-      statusSuggestion: "blocked",
-      blockedUntil: new Date(Date.now() + waitSeconds * 1000).toISOString(),
-      retryAfterSeconds,
-      fallbackWaitSeconds,
-      confidence: retryAfterSeconds == null ? 0.78 : 0.9,
-      summary: "Rate limit or quota window detected."
-    };
-  }
-
-  if (matchesAny(lower, [
-    "unauthorized",
-    "authentication",
-    "auth error",
-    "invalid api key",
-    "api key",
-    "permission denied",
-    "forbidden",
-    "401",
-    "403"
-  ])) {
-    return {
-      class: "auth_error",
-      source,
-      statusSuggestion: "needs-human",
-      blockedUntil: null,
-      retryAfterSeconds: null,
-      confidence: 0.82,
-      summary: "Authentication or permission problem detected."
-    };
-  }
-
-  if (matchesAny(lower, [
-    "test failed",
-    "tests failed",
-    "failing test",
-    "assertionerror",
-    "err_assertion",
-    "expected",
-    "received",
-    "npm err!",
-    "failed test"
-  ])) {
-    return {
-      class: "test_failure",
-      source,
-      statusSuggestion: "paused",
-      blockedUntil: null,
-      retryAfterSeconds: null,
-      confidence: 0.72,
-      summary: "Test or assertion failure detected."
-    };
-  }
-
-  if (matchesAny(lower, [
-    "missing context",
-    "not enough context",
-    "need more context",
-    "cannot find",
-    "could not find",
-    "file not found",
-    "enoent",
-    "no such file"
-  ])) {
-    return {
-      class: "missing_context",
-      source,
-      statusSuggestion: "needs-human",
-      blockedUntil: null,
-      retryAfterSeconds: null,
-      confidence: 0.7,
-      summary: "Missing context or missing file detected."
-    };
-  }
-
-  return {
-    class: exitCode === 0 ? "success" : "unknown",
-    source,
-    statusSuggestion: exitCode === 0 ? "paused" : "needs-human",
-    blockedUntil: null,
-    retryAfterSeconds: null,
-    confidence: exitCode === 0 ? 0.6 : 0.2,
-    summary: exitCode === 0 ? "No failure pattern detected." : "No known failure pattern detected."
-  };
-}
-
 function applyClassification(taskDir, checkpoint, result, text, opts = {}) {
   const now = new Date().toISOString();
   const evidence = normalizeEvidence(opts.evidence, now);
@@ -1980,27 +1873,6 @@ function nextStepForClassification(result) {
   return "Human review required: classify the failure and choose the next bounded step.";
 }
 
-function inferFailureSource(text, explicitSource) {
-  if (explicitSource && explicitSource !== true) return String(explicitSource);
-  if (text.includes("codex")) return "codex-cli";
-  if (text.includes("openclaw") || text.includes("minimax")) return "openclaw-provider";
-  if (text.includes("cron") || text.includes("scheduler")) return "scheduler";
-  if (text.includes("api")) return "external-api";
-  return "manual";
-}
-
-function parseRetryAfterSeconds(text) {
-  const retryAfter = text.match(/retry(?:\s|-)?after(?:\s|:)+(\d+)/i);
-  if (retryAfter) return Number(retryAfter[1]);
-  const resetIn = text.match(/(?:reset|resets|try again)(?:\s+\w+){0,3}\s+in\s+(\d+)\s*(second|seconds|minute|minutes|hour|hours)/i);
-  if (!resetIn) return null;
-  const value = Number(resetIn[1]);
-  const unit = resetIn[2].toLowerCase();
-  if (unit.startsWith("hour")) return value * 3600;
-  if (unit.startsWith("minute")) return value * 60;
-  return value;
-}
-
 function codexSessionEvidenceForFailure({ worker, task, args, text, classification, startedAt, finishedAt }) {
   if (worker !== "codex-cli" || classification?.class !== "rate_limit") return null;
   const sessionPath = resolveCodexSessionPath({
@@ -2104,10 +1976,6 @@ function expandHome(path) {
 function normalizeAbsolutePath(path) {
   const resolved = resolve(String(path));
   return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
-}
-
-function matchesAny(text, needles) {
-  return needles.some((needle) => text.includes(needle));
 }
 
 function uniqueStrings(values) {

@@ -249,6 +249,21 @@ check("classify detects rate limits with retry timing", () => withTask((taskDir)
   assert.ok(result.blockedUntil);
 }));
 
+check("classify parses HTTP-date Retry-After", () => withTask((taskDir) => {
+  const retryAt = new Date(Date.now() + 90_000).toUTCString();
+  const result = run([
+    "classify",
+    taskDir,
+    "--text", `Codex CLI returned 429 Too Many Requests. Retry-After: ${retryAt}`,
+    "--exit-code", "1"
+  ], { json: true });
+
+  assert.equal(result.class, "rate_limit");
+  assert.equal(result.source, "codex-cli");
+  assert.ok(result.retryAfterSeconds > 0);
+  assert.ok(result.retryAfterSeconds <= 90);
+}));
+
 check("classify --record updates checkpoint and run events", () => withTask((taskDir) => {
   run([
     "classify",
@@ -306,6 +321,26 @@ check("classify routes auth and missing context to needs-human", () => withTask(
   assert.equal(auth.statusSuggestion, "needs-human");
   assert.equal(missing.class, "missing_context");
   assert.equal(missing.statusSuggestion, "needs-human");
+}));
+
+check("classify avoids broad expected/received and api source false positives", () => withTask((taskDir) => {
+  const arbitraryStack = run([
+    "classify",
+    taskDir,
+    "--text", "Renderer output changed: expected compact layout but received expanded layout.",
+    "--exit-code", "1"
+  ], { json: true });
+  const external = run([
+    "classify",
+    taskDir,
+    "--text", "External API request failed with HTTP 500.",
+    "--exit-code", "1"
+  ], { json: true });
+
+  assert.equal(arbitraryStack.class, "unknown");
+  assert.equal(arbitraryStack.source, "manual");
+  assert.equal(external.class, "unknown");
+  assert.equal(external.source, "external-api");
 }));
 
 check("classify routes test failures to paused", () => withTask((taskDir) => {
