@@ -8,24 +8,14 @@ import { classifyFailure } from "./core/classification.js";
 import { buildWorkerPrompt, normalizeSuccessCriteria } from "./core/prompt.js";
 import { decideNext } from "./core/state.js";
 import { buildOpenClawRecipe } from "./schedulers/openclaw.js";
+import { buildWorkerCommand as buildWorkerCommandPlan, resolveWorkerCwd } from "./workers/command-plans.js";
+import { executeWorkerCommand } from "./workers/executor.js";
 import { configuredWorkers, missingWorkerPlanConfig, normalizeScheduler, normalizeWorker } from "./workers/registry.js";
 
 const VERSION = "0.2.0";
 const SUPPORTED_SCHEMA_VERSION = 1;
 const SCHEMA_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "schemas");
 const EVIDENCE_TYPES = ["test", "screenshot", "video-clip", "transcript", "benchmark", "review-note", "worker-output", "codex-session", "handoff", "artifact"];
-const DEFAULT_CODEX_SANDBOX = "read-only";
-const DEFAULT_CODEX_FORBIDDEN_CWD_PATTERNS = [
-  "~",
-  "~/.ssh",
-  "~/.ssh/**",
-  "~/.openclaw",
-  "~/.openclaw/**",
-  "~/.claude",
-  "~/.claude/**",
-  "~/.codex",
-  "~/.codex/**"
-];
 
 function main(argv) {
   const [cmd, taskDirArg, ...rest] = argv;
@@ -1526,152 +1516,11 @@ function workerPlanCheck(taskDir, task, worker) {
 }
 
 function buildWorkerCommand(taskDir, task, worker, workerPrompt, args) {
-  if (worker === "local-command") return buildLocalCommand(taskDir, task, args);
-  if (worker === "codex-cli") return buildCodexCommand(taskDir, task, args);
-  if (worker === "kimi-cli") return buildKimiCommand(taskDir, task, args);
-  fail(`Unsupported worker adapter: ${worker}`);
-}
-
-function buildLocalCommand(taskDir, task, args) {
-  const command = args.command || task.localWorker?.command;
-  if (!command || command === true) {
-    fail("local-command requires --command or task.localWorker.command.");
+  try {
+    return buildWorkerCommandPlan(taskDir, task, worker, args);
+  } catch (error) {
+    fail(error.message);
   }
-  const cwd = resolveWorkerCwd(taskDir, task, args.cwd || task.localWorker?.cwd);
-  const timeoutSeconds = Number(args["timeout-seconds"] || task.localWorker?.timeoutSeconds || 1800);
-  assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
-  return {
-    kind: "local-command",
-    command: String(command),
-    args: [],
-    cwd,
-    shell: true,
-    timeoutMs: timeoutSeconds * 1000,
-    displayCommand: String(command)
-  };
-}
-
-function buildCodexCommand(taskDir, task, args) {
-  const cwdValue = args.cwd || task.codexWorker?.cwd || task.context?.repoPath || task.context?.repository;
-  if (!cwdValue) {
-    fail("codex-cli requires --cwd, task.codexWorker.cwd, or task.context.repoPath.");
-  }
-  const cwd = resolveWorkerCwd(taskDir, task, cwdValue);
-  assertCodexCwdAllowed(cwd, task, args);
-  const timeoutSeconds = Number(args["timeout-seconds"] || task.codexWorker?.timeoutSeconds || 1800);
-  assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
-  const commandArgs = ["exec", "--cd", cwd, "--ask-for-approval", "never"];
-  const sandbox = args.sandbox || task.codexWorker?.sandbox || DEFAULT_CODEX_SANDBOX;
-  if (sandbox && sandbox !== true) commandArgs.push("--sandbox", String(sandbox));
-  const model = args.model || task.codexWorker?.model;
-  if (model && model !== true) commandArgs.push("--model", String(model));
-  if (args.oss || task.codexWorker?.oss) commandArgs.push("--oss");
-  const localProvider = args["local-provider"] || task.codexWorker?.localProvider;
-  if (localProvider && localProvider !== true) commandArgs.push("--local-provider", String(localProvider));
-  commandArgs.push("-");
-
-  return {
-    kind: "codex-cli",
-    command: "codex",
-    args: commandArgs,
-    cwd,
-    shell: false,
-    timeoutMs: timeoutSeconds * 1000,
-    displayCommand: ["codex", ...commandArgs.map(shellQuote)].join(" ")
-  };
-}
-
-function assertCodexCwdAllowed(cwd, task, args) {
-  const match = codexForbiddenCwdPatterns(task, args).find((pattern) => pathMatchesForbiddenPattern(cwd, pattern));
-  if (match) {
-    fail(`Refusing to start codex-cli in forbidden cwd ${cwd} (matched ${match}).`);
-  }
-}
-
-function codexForbiddenCwdPatterns(task, args) {
-  const argPatterns = args["forbidden-cwd-patterns"] && args["forbidden-cwd-patterns"] !== true
-    ? splitCsv(args["forbidden-cwd-patterns"])
-    : [];
-  const taskPatterns = [
-    ...(Array.isArray(task.codexWorker?.forbiddenCwdPatterns) ? task.codexWorker.forbiddenCwdPatterns : []),
-    ...(Array.isArray(task.workerPolicy?.forbiddenCwdPatterns) ? task.workerPolicy.forbiddenCwdPatterns : []),
-    ...(Array.isArray(task.constraints) ? task.constraints.flatMap((constraint) => Array.isArray(constraint?.forbiddenCwdPatterns) ? constraint.forbiddenCwdPatterns : []) : [])
-  ];
-  return uniqueStrings([
-    ...DEFAULT_CODEX_FORBIDDEN_CWD_PATTERNS,
-    ...taskPatterns,
-    ...argPatterns
-  ]);
-}
-
-function pathMatchesForbiddenPattern(path, pattern) {
-  const normalizedPath = normalizeAbsolutePath(path);
-  const normalizedPattern = normalizeAbsolutePath(expandHome(String(pattern)));
-  if (String(pattern).endsWith("/**")) {
-    const base = normalizeAbsolutePath(expandHome(String(pattern).slice(0, -3)));
-    return normalizedPath === base || normalizedPath.startsWith(`${base}/`);
-  }
-  if (String(pattern).includes("*")) {
-    return globPatternToRegExp(normalizedPattern).test(normalizedPath);
-  }
-  return normalizedPath === normalizedPattern;
-}
-
-function globPatternToRegExp(pattern) {
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*");
-  return new RegExp(`^${escaped}$`);
-}
-
-function buildKimiCommand(taskDir, task, args) {
-  const cwdValue = args.cwd || task.kimiWorker?.cwd || task.context?.repoPath || task.context?.repository;
-  if (!cwdValue) {
-    fail("kimi-cli requires --cwd, task.kimiWorker.cwd, or task.context.repoPath.");
-  }
-  const cwd = resolveWorkerCwd(taskDir, task, cwdValue);
-  const timeoutSeconds = Number(args["timeout-seconds"] || task.kimiWorker?.timeoutSeconds || 1800);
-  assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
-  const commandArgs = [
-    "--work-dir", cwd,
-    "--print",
-    "--input-format", "text",
-    "--output-format", "text",
-    "--final-message-only",
-    "--yolo"
-  ];
-  const model = args["kimi-model"] || task.kimiWorker?.model;
-  if (model && model !== true) commandArgs.push("--model", String(model));
-
-  return {
-    kind: "kimi-cli",
-    command: "kimi",
-    args: commandArgs,
-    cwd,
-    shell: false,
-    timeoutMs: timeoutSeconds * 1000,
-    displayCommand: ["kimi", ...commandArgs.map(shellQuote)].join(" ")
-  };
-}
-
-function resolveWorkerCwd(taskDir, task, cwdValue) {
-  const value = cwdValue || task.context?.repoPath || task.context?.repository || taskDir;
-  return resolve(taskDir, expandHome(String(value)));
-}
-
-function executeWorkerCommand(plan, workerPrompt) {
-  const result = spawnSync(plan.command, plan.args, {
-    cwd: plan.cwd,
-    input: workerPrompt,
-    encoding: "utf8",
-    shell: plan.shell,
-    timeout: plan.timeoutMs,
-    maxBuffer: 10 * 1024 * 1024
-  });
-  return {
-    status: result.status ?? (result.error ? 1 : 0),
-    stdout: result.stdout || "",
-    stderr: result.stderr || "",
-    error: result.error || null
-  };
 }
 
 function writeWorkerOutput(taskDir, record) {
@@ -1888,11 +1737,6 @@ function expandHome(path) {
   return path;
 }
 
-function normalizeAbsolutePath(path) {
-  const resolved = resolve(String(path));
-  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
-}
-
 function uniqueStrings(values) {
   return Array.from(new Set(values.filter(Boolean).map(String)));
 }
@@ -2098,12 +1942,6 @@ function omitUndefined(value) {
 
 function relativeCliPath() {
   return "src/cli.js";
-}
-
-function shellQuote(value) {
-  const text = String(value);
-  if (/^[a-zA-Z0-9_./:=@+-]+$/.test(text)) return text;
-  return `'${text.replaceAll("'", "'\\''")}'`;
 }
 
 function firstLine(text) {

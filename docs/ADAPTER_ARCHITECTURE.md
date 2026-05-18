@@ -109,9 +109,9 @@ Use adapters for tool-specific behavior:
 Current code keeps command orchestration in `src/cli.js`, with the first pure modules extracted around stable boundaries:
 
 - Core: `src/core/state.js`, `src/core/prompt.js`, `src/core/classification.js`.
-- Worker registry: `src/workers/registry.js` normalizes worker names and shared worker readiness checks.
+- Worker adapters: `src/workers/registry.js` normalizes worker names and shared readiness checks, `src/workers/command-plans.js` builds local/Codex/Kimi command plans, and `src/workers/executor.js` owns process execution.
 - Scheduler recipe generation: `src/schedulers/openclaw.js`.
-- Still in CLI: worker command execution, Kimi fallback flow, Codex session evidence detection, lock handling, checkpoint writes, and run events.
+- Still in CLI: Kimi fallback flow, Codex session evidence detection, lock handling, checkpoint writes, and run events.
 
 The next refactor should keep extracting behavior before introducing inheritance:
 
