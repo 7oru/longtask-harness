@@ -883,7 +883,7 @@ check("init output validates", () => {
   const dir = mkdtempSync(join(tmpdir(), "longtask-harness-init-"));
   const taskDir = join(dir, "new-task");
   try {
-    run(["init", taskDir, "--template", "coding"]);
+    run(["init", taskDir, "--template=coding"]);
     run(["validate", taskDir]);
     const tick = run(["tick", taskDir, "--dry-run"], { json: true });
     assert.equal(tick.decision, "run");

@@ -173,6 +173,14 @@ node src/cli.js run tasks/my-coding-task \
 node src/cli.js openclaw-recipe tasks/my-coding-task --every 30m
 ```
 
+查看已经记录好的本地 resume demo：
+
+```bash
+node src/cli.js verify examples/resume-demo
+node src/cli.js summary examples/resume-demo
+node src/cli.js tail examples/resume-demo --limit 5
+```
+
 ## 测试流程
 
 提交前运行完整 smoke suite：
@@ -203,7 +211,9 @@ smoke suite 会把 example task 复制到临时目录里测试，覆盖 happy pa
 - active task lock 会让 `run` 等待，不会启动重叠 worker。
 - 过期 task lock 会被接管，并在 run 结束后释放。
 - `health` 会报告 adapter readiness，但测试不会强制本机必须安装所有 CLI。
+- `summary` 和 `tail` 会从 JSONL run logs 生成可读的状态摘要和最近事件。
 - `openclaw-recipe` 会生成 cron command。
+- `examples/resume-demo` 会验证一条已经记录好的本地恢复 fixture。
 - 新 `init` 出来的任务可以 validate，也可以 dry-run tick。
 
 测试规则：

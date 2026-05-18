@@ -86,8 +86,11 @@ function parseArgs(args) {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (!arg.startsWith("--")) fail(`Unexpected argument: ${arg}`);
-    const key = arg.slice(2);
-    const value = args[i + 1]?.startsWith("--") || args[i + 1] == null ? true : args[++i];
+    const eq = arg.indexOf("=");
+    const key = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+    const value = eq === -1
+      ? (args[i + 1]?.startsWith("--") || args[i + 1] == null ? true : args[++i])
+      : arg.slice(eq + 1);
     out[key] = value;
   }
   return out;

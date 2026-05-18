@@ -7,6 +7,17 @@
     "lth": "./src/cli.js",
     "longtask-harness": "./src/cli.js"
   },
+  "files": [
+    "src/",
+    "schemas/",
+    "scripts/",
+    "examples/",
+    "docs/",
+    "README.md",
+    "README.CN.md",
+    "ROADMAP.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node scripts/smoke-test.mjs",
     "demo:next": "node src/cli.js next examples/coding"
