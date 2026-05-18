@@ -211,6 +211,14 @@ Generate an OpenClaw cron recipe:
 node src/cli.js openclaw-recipe tasks/my-coding-task --every 30m
 ```
 
+Inspect the recorded local resume demo:
+
+```bash
+node src/cli.js verify examples/resume-demo
+node src/cli.js summary examples/resume-demo
+node src/cli.js tail examples/resume-demo --limit 5
+```
+
 ## Testing Workflow
 
 Run the full smoke suite before committing:

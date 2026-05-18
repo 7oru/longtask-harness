@@ -1,0 +1,11 @@
+worker: local-command
+command: node artifacts/demo-worker.mjs
+cwd: /Users/ricktu/longtask-harness/examples/resume-demo
+exitCode: 0
+startedAt: 2026-05-17T12:35:54.084Z
+finishedAt: 2026-05-17T12:35:54.111Z
+## stdout
+DEMO_SLICE_OK local bounded slice completed
+artifact: artifacts/demo-result.txt
+
+## stderr

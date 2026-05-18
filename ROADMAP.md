@@ -30,5 +30,5 @@ See [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md) for the latest verifi
 ## 0.4 Portfolio Polish
 
 - Add diagrams and a live demo task.
-- Publish example case studies: coding refactor, PR review, video analysis.
+- Publish example case studies: coding refactor, PR review, video analysis. *(Initial local resume demo fixture exists.)*
 - Add GitHub Actions validation.

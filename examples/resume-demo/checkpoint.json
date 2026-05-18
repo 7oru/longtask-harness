@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "taskId": "resume-demo",
+  "status": "paused",
+  "currentPhase": "demo-run",
+  "nextStep": "Review worker output and choose the next bounded step.",
+  "blockedUntil": null,
+  "blocker": null,
+  "lastCompletedStep": "Worker local-command completed one bounded slice.",
+  "activeFiles": [
+    "artifacts/demo-worker.mjs"
+  ],
+  "openQuestions": [],
+  "evidence": [
+    {
+      "type": "worker-output",
+      "path": "evidence/worker-output-2026-05-17T12-35-54-111Z.txt",
+      "observedAt": "2026-05-17T12:35:54.111Z"
+    },
+    {
+      "type": "review-note",
+      "criterionId": "demo-reviewed",
+      "observedAt": "2026-05-17T12:35:59.232Z",
+      "status": "pass",
+      "summary": "Reviewed worker output and artifact; the demo can resume from checkpoint and evidence.",
+      "manifestPath": "evidence/review-note-manifest-2026-05-17T12-35-59-232Z.json"
+    },
+    {
+      "type": "handoff",
+      "observedAt": "2026-05-17T12:36:15.718Z",
+      "status": "pass",
+      "summary": "Resume by reading checkpoint.nextStep, then inspect evidence/worker-output and artifacts/demo-result.txt before choosing the next bounded slice.",
+      "manifestPath": "evidence/handoff-manifest-2026-05-17T12-36-15-718Z.json"
+    }
+  ],
+  "updatedAt": "2026-05-17T12:36:15.718Z"
+}

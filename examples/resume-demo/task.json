@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "id": "resume-demo",
+  "title": "Recorded resume demo",
+  "domain": "coding",
+  "objective": "Demonstrate one resumable coding slice with captured worker output, review evidence, and summary-ready run logs.",
+  "successCriteria": [
+    {
+      "id": "demo-output",
+      "description": "The worker output records the demo slice marker.",
+      "metric": "output_contains",
+      "target": "DEMO_SLICE_OK",
+      "weight": 1
+    },
+    {
+      "id": "demo-reviewed",
+      "description": "A review note confirms the demo can be resumed from evidence.",
+      "metric": "manual",
+      "weight": 1
+    }
+  ],
+  "constraints": [
+    {
+      "id": "bounded-runs",
+      "description": "Keep each run bounded and checkpointed.",
+      "type": "hard",
+      "category": "scope"
+    },
+    {
+      "id": "local-only",
+      "description": "Use only local commands so the fixture works without external model credentials.",
+      "type": "hard",
+      "category": "safety"
+    }
+  ],
+  "context": {
+    "summary": "This fixture is a recorded local-command run that exercises the harness state, evidence, and observability path.",
+    "files": [
+      "artifacts/demo-worker.mjs",
+      "artifacts/demo-result.txt"
+    ],
+    "links": []
+  },
+  "scheduler": {
+    "type": "manual"
+  },
+  "workerPolicy": {
+    "preferred": "local-command",
+    "allowed": [
+      "local-command"
+    ]
+  },
+  "localWorker": {
+    "command": "node artifacts/demo-worker.mjs",
+    "cwd": ".",
+    "timeoutSeconds": 30
+  },
+  "rateLimitPolicy": {
+    "sources": [],
+    "fallbackWaitSeconds": 14400,
+    "allowHandoffOnRateLimit": true
+  },
+  "createdAt": "2026-05-17T12:35:18.913Z"
+}

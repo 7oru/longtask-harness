@@ -79,6 +79,8 @@ function check(label, fn) {
 check("examples validate", () => {
   run(["validate", "examples/coding"]);
   run(["validate", "examples/video-analysis"]);
+  run(["validate", "examples/resume-demo"]);
+  assert.equal(run(["verify", "examples/resume-demo"], { json: true }).status, "pass");
 });
 
 check("validate rejects unsupported schema versions", () => withTask((taskDir) => {

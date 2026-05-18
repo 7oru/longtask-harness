@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "taskId": "resume-demo",
+  "recordedAt": "2026-05-17T12:36:15.718Z",
+  "evidence": {
+    "type": "handoff",
+    "observedAt": "2026-05-17T12:36:15.718Z",
+    "status": "pass",
+    "summary": "Resume by reading checkpoint.nextStep, then inspect evidence/worker-output and artifacts/demo-result.txt before choosing the next bounded slice.",
+    "manifestPath": "evidence/handoff-manifest-2026-05-17T12-36-15-718Z.json"
+  }
+}

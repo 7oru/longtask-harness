@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "taskId": "resume-demo",
+  "recordedAt": "2026-05-17T12:35:59.232Z",
+  "evidence": {
+    "type": "review-note",
+    "criterionId": "demo-reviewed",
+    "observedAt": "2026-05-17T12:35:59.232Z",
+    "status": "pass",
+    "summary": "Reviewed worker output and artifact; the demo can resume from checkpoint and evidence.",
+    "manifestPath": "evidence/review-note-manifest-2026-05-17T12-35-59-232Z.json"
+  }
+}
