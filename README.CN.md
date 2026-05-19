@@ -157,7 +157,7 @@ node src/cli.js run tasks/my-coding-task \
   --command "ollama run qwen2.5-coder:32b"
 ```
 
-`lth run` 启动 worker 前会创建短生命周期的 `.lth.lock` 文件。如果另一个 worker 已经持有 lock，命令会返回 `decision: "wait"`，不会启动第二个 worker。过期 lock 会自动清理并接管。
+`lth run` 启动 worker 前会创建短生命周期的 `.lth.lock` lease。如果另一个 worker 已经持有 lock，命令会返回 `decision: "wait"`，不会启动第二个 worker。过期 lock 会自动退役并接管。
 
 用 Codex CLI 运行一个 bounded worker slice：
 
@@ -207,7 +207,7 @@ smoke suite 会把 example task 复制到临时目录里测试，覆盖 happy pa
 - schema validation 会拒绝不支持的 `schemaVersion` 和格式错误的 evidence。
 - `run --worker local-command` 会运行一个本地 bounded worker slice、捕获输出并写 checkpoint state。
 - 失败的本地 worker 会被分类并记录。
-- Codex worker 默认使用 `read-only` sandbox，并拒绝 forbidden working directory。
+- Codex worker 默认使用 `read-only` sandbox；所有 worker 都会拒绝 forbidden working directory。
 - active task lock 会让 `run` 等待，不会启动重叠 worker。
 - 过期 task lock 会被接管，并在 run 结束后释放。
 - `health` 会报告 adapter readiness，但测试不会强制本机必须安装所有 CLI。

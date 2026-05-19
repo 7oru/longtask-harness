@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync, appendFileSync, rmSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync, appendFileSync, rmSync, readdirSync, renameSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -1573,23 +1573,27 @@ function acquireRunLock(taskDir, task, args) {
     return { acquired: true, path: lockPath, info };
   }
 
-  const existing = readLockInfo(lockPath);
-  const existingExpiry = Date.parse(existing?.expiresAt || "");
+  const existing = readLockSnapshot(lockPath);
+  const existingExpiry = Date.parse(existing?.info?.expiresAt || "");
   if (Number.isFinite(existingExpiry) && existingExpiry <= now) {
-    rmSync(lockPath, { recursive: true, force: true });
-    if (tryWriteLockFile(lockPath, info)) {
-      return { acquired: true, path: lockPath, info, stoleExpired: existing };
+    const stoleExpired = existing.info;
+    if (tryRetireExpiredLock(lockPath, existing) && tryWriteLockFile(lockPath, info)) {
+      return { acquired: true, path: lockPath, info, stoleExpired };
     }
   }
 
-  const waitSeconds = Number.isFinite(existingExpiry)
-    ? Math.max(1, Math.ceil((existingExpiry - now) / 1000))
-    : ttlSeconds;
+  const current = readLockSnapshot(lockPath);
+  const currentExpiry = Date.parse(current?.info?.expiresAt || "");
+  const waitSeconds = Number.isFinite(currentExpiry)
+    ? Math.max(1, Math.ceil((currentExpiry - now) / 1000))
+    : Number.isFinite(existingExpiry)
+      ? Math.max(1, Math.ceil((existingExpiry - now) / 1000))
+      : ttlSeconds;
   return {
     acquired: false,
     path: lockPath,
     waitSeconds,
-    info: existing || { path: lockPath, message: "lock exists but lock info could not be read" }
+    info: current?.info || existing?.info || { path: lockPath, message: "lock exists but lock info could not be read" }
   };
 }
 
@@ -1599,8 +1603,11 @@ function releaseRunLock(lock) {
 
 function tryWriteLockFile(lockPath, info) {
   let fd = null;
+  let createdDir = false;
   try {
-    fd = openSync(lockPath, "wx");
+    mkdirSync(lockPath);
+    createdDir = true;
+    fd = openSync(join(lockPath, "lock.json"), "wx");
     writeFileSync(fd, JSON.stringify(info, null, 2) + "\n", "utf8");
     closeSync(fd);
     return true;
@@ -1609,8 +1616,10 @@ function tryWriteLockFile(lockPath, info) {
       try {
         closeSync(fd);
       } catch {}
+    }
+    if (createdDir) {
       try {
-        unlinkSync(lockPath);
+        rmSync(lockPath, { recursive: true, force: true });
       } catch {}
     }
     if (error.code === "EEXIST" || error.code === "EISDIR") return false;
@@ -1618,14 +1627,79 @@ function tryWriteLockFile(lockPath, info) {
   }
 }
 
-function readLockInfo(lockPath) {
+function readLockSnapshot(lockPath) {
   try {
     const stat = statSync(lockPath);
     const path = stat.isDirectory() ? join(lockPath, "lock.json") : lockPath;
-    return JSON.parse(readFileSync(path, "utf8"));
+    return {
+      info: JSON.parse(readFileSync(path, "utf8")),
+      stat: lockStatIdentity(stat),
+      isDirectory: stat.isDirectory()
+    };
   } catch {
     return null;
   }
+}
+
+function tryRetireExpiredLock(lockPath, snapshot) {
+  if (!snapshot?.stat) return false;
+  return snapshot.isDirectory
+    ? tryRetireExpiredLockDirectory(lockPath, snapshot)
+    : tryRetireExpiredLockFile(lockPath, snapshot);
+}
+
+function tryRetireExpiredLockDirectory(lockPath, snapshot) {
+  let fd = null;
+  const claimPath = join(lockPath, `.steal-${process.pid}-${Date.now()}`);
+  try {
+    if (!sameLockStat(lockStatIdentity(statSync(lockPath)), snapshot.stat)) return false;
+    fd = openSync(claimPath, "wx");
+    writeFileSync(fd, `${process.pid}\n`, "utf8");
+    closeSync(fd);
+    rmSync(lockPath, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+    if (error.code === "ENOENT" || error.code === "EEXIST" || error.code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+function tryRetireExpiredLockFile(lockPath, snapshot) {
+  const retiredPath = `${lockPath}.expired-${process.pid}-${Date.now()}`;
+  try {
+    if (!sameLockStat(lockStatIdentity(statSync(lockPath)), snapshot.stat)) return false;
+    renameSync(lockPath, retiredPath);
+    rmSync(retiredPath, { force: true });
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "EISDIR") return false;
+    throw error;
+  }
+}
+
+function lockStatIdentity(stat) {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    mode: stat.mode,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    isDirectory: stat.isDirectory()
+  };
+}
+
+function sameLockStat(left, right) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.isDirectory === right.isDirectory;
 }
 
 function nextStepForClassification(result) {
@@ -1900,10 +1974,14 @@ function appendRunEvent(taskDir, event) {
   const at = event.at || new Date().toISOString();
   const normalized = omitUndefined({ ...event, at });
   const errors = validateJsonSchema(normalized, loadSchema("run-event.schema.json"), "run-event");
-  if (errors.length) fail(`Invalid run event: ${errors.join("; ")}`);
+  if (errors.length) {
+    console.error(`Warning: skipped invalid run event: ${errors.join("; ")}`);
+    return false;
+  }
   const runPath = join(taskDir, "runs", `${at.slice(0, 10)}.jsonl`);
   mkdirSync(dirname(runPath), { recursive: true });
   appendFileSync(runPath, JSON.stringify(normalized) + "\n");
+  return true;
 }
 
 function readRunEvents(taskDir) {

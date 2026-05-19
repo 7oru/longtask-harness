@@ -111,10 +111,10 @@ This is where project-specific safety rules, verification commands, and handoff 
 
 ## .lth.lock
 
-Runtime-only lease file created atomically by `lth run` before a worker starts.
+Runtime-only lease created atomically by `lth run` before a worker starts.
 
-This file is not durable task state. It prevents overlapping workers from writing the same checkpoint and run log at the same time. If the lock has not expired, a second `lth run` returns `decision: "wait"`. If the lock has expired, the next run removes it and creates a fresh lease.
+This lock is not durable task state. It prevents overlapping workers from writing the same checkpoint and run log at the same time. If the lock has not expired, a second `lth run` returns `decision: "wait"`. If the lock has expired, the next run retires it and creates a fresh lease.
 
 ## Codex safety defaults
 
-`codex-cli` runs with `--sandbox read-only` unless `task.codexWorker.sandbox` or `--sandbox` explicitly opts into a broader sandbox. The harness refuses to start Codex in default forbidden working directories such as the home directory, `~/.ssh`, `~/.openclaw`, `~/.claude`, and `~/.codex`. Tasks can add `forbiddenCwdPatterns` under `codexWorker`, `workerPolicy`, or individual constraints.
+`codex-cli` runs with `--sandbox read-only` unless `task.codexWorker.sandbox` or `--sandbox` explicitly opts into a broader sandbox. The harness refuses to start any worker in default forbidden working directories such as the home directory, `~/.ssh`, `~/.openclaw`, `~/.claude`, and `~/.codex`. Tasks can add `forbiddenCwdPatterns` under a worker config, `workerPolicy`, or individual constraints.

@@ -54,11 +54,11 @@ For `codex-cli` and `local-command` workers, the recipe generator emits a cron c
 
 ## Concurrency
 
-`lth run` uses a task-local `.lth.lock` file as an atomic lease before starting a worker. If a cron tick overlaps with an existing worker, the second run returns `decision: "wait"` and exits without changing checkpoint state or starting another worker. The lease has an expiration timestamp; stale locks are removed and replaced before the new worker starts.
+`lth run` uses a task-local `.lth.lock` lease before starting a worker. If a cron tick overlaps with an existing worker, the second run returns `decision: "wait"` and exits without changing checkpoint state or starting another worker. The lease has an expiration timestamp; stale locks are retired and replaced before the new worker starts.
 
 Use `--lock-ttl-seconds` to tune the lease window. It should be longer than the expected worker timeout.
 
-Codex workers default to `--sandbox read-only`; `workspace-write` and `danger-full-access` require explicit task or CLI configuration. The harness also blocks Codex from starting inside sensitive cwd patterns such as `~/.openclaw`.
+Codex workers default to `--sandbox read-only`; `workspace-write` and `danger-full-access` require explicit task or CLI configuration. The harness blocks all workers from starting inside sensitive cwd patterns such as `~/.openclaw`.
 
 ## Worker Contract
 

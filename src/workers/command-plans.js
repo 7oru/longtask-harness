@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 const DEFAULT_CODEX_SANDBOX = "read-only";
-const DEFAULT_CODEX_FORBIDDEN_CWD_PATTERNS = [
+const DEFAULT_FORBIDDEN_CWD_PATTERNS = [
   "~",
   "~/.ssh",
   "~/.ssh/**",
@@ -27,6 +27,7 @@ function buildLocalCommand(taskDir, task, args) {
     throw new Error("local-command requires --command or task.localWorker.command.");
   }
   const cwd = resolveWorkerCwd(taskDir, task, args.cwd || task.localWorker?.cwd);
+  assertWorkerCwdAllowed(cwd, task, args, "local-command");
   const timeoutSeconds = Number(args["timeout-seconds"] || task.localWorker?.timeoutSeconds || 1800);
   assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
   return {
@@ -46,7 +47,7 @@ function buildCodexCommand(taskDir, task, args) {
     throw new Error("codex-cli requires --cwd, task.codexWorker.cwd, or task.context.repoPath.");
   }
   const cwd = resolveWorkerCwd(taskDir, task, cwdValue);
-  assertCodexCwdAllowed(cwd, task, args);
+  assertWorkerCwdAllowed(cwd, task, args, "codex-cli");
   const timeoutSeconds = Number(args["timeout-seconds"] || task.codexWorker?.timeoutSeconds || 1800);
   assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
   const commandArgs = ["exec", "--cd", cwd, "--ask-for-approval", "never"];
@@ -76,6 +77,7 @@ function buildKimiCommand(taskDir, task, args) {
     throw new Error("kimi-cli requires --cwd, task.kimiWorker.cwd, or task.context.repoPath.");
   }
   const cwd = resolveWorkerCwd(taskDir, task, cwdValue);
+  assertWorkerCwdAllowed(cwd, task, args, "kimi-cli");
   const timeoutSeconds = Number(args["timeout-seconds"] || task.kimiWorker?.timeoutSeconds || 1800);
   assertPositiveSeconds(timeoutSeconds, "--timeout-seconds");
   const commandArgs = [
@@ -100,24 +102,29 @@ function buildKimiCommand(taskDir, task, args) {
   };
 }
 
-function assertCodexCwdAllowed(cwd, task, args) {
-  const match = codexForbiddenCwdPatterns(task, args).find((pattern) => pathMatchesForbiddenPattern(cwd, pattern));
+function assertWorkerCwdAllowed(cwd, task, args, worker) {
+  const match = forbiddenCwdPatterns(task, args, worker).find((pattern) => pathMatchesForbiddenPattern(cwd, pattern));
   if (match) {
-    throw new Error(`Refusing to start codex-cli in forbidden cwd ${cwd} (matched ${match}).`);
+    throw new Error(`Refusing to start ${worker} in forbidden cwd ${cwd} (matched ${match}).`);
   }
 }
 
-function codexForbiddenCwdPatterns(task, args) {
+function forbiddenCwdPatterns(task, args, worker) {
   const argPatterns = args["forbidden-cwd-patterns"] && args["forbidden-cwd-patterns"] !== true
     ? splitCsv(args["forbidden-cwd-patterns"])
     : [];
+  const workerConfig = worker === "codex-cli"
+    ? task.codexWorker
+    : worker === "kimi-cli"
+      ? task.kimiWorker
+      : task.localWorker;
   const taskPatterns = [
-    ...(Array.isArray(task.codexWorker?.forbiddenCwdPatterns) ? task.codexWorker.forbiddenCwdPatterns : []),
+    ...(Array.isArray(workerConfig?.forbiddenCwdPatterns) ? workerConfig.forbiddenCwdPatterns : []),
     ...(Array.isArray(task.workerPolicy?.forbiddenCwdPatterns) ? task.workerPolicy.forbiddenCwdPatterns : []),
     ...(Array.isArray(task.constraints) ? task.constraints.flatMap((constraint) => Array.isArray(constraint?.forbiddenCwdPatterns) ? constraint.forbiddenCwdPatterns : []) : [])
   ];
   return uniqueStrings([
-    ...DEFAULT_CODEX_FORBIDDEN_CWD_PATTERNS,
+    ...DEFAULT_FORBIDDEN_CWD_PATTERNS,
     ...taskPatterns,
     ...argPatterns
   ]);

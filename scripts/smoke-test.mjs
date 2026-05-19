@@ -601,6 +601,33 @@ check("run codex-cli rejects forbidden cwd", () => withTask((taskDir) => {
   assert.match(result.stderr, /forbidden cwd/);
 }));
 
+check("run kimi-cli rejects forbidden cwd", () => withTask((taskDir) => {
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "kimi-cli",
+    "--cwd", "~/.openclaw",
+    "--dry-run"
+  ], { raw: true, allowFailure: true });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Refusing to start kimi-cli in forbidden cwd/);
+}));
+
+check("run local-command rejects forbidden cwd", () => withTask((taskDir) => {
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "local-command",
+    "--command", "node -e \"process.exit(0)\"",
+    "--cwd", "~/.openclaw",
+    "--dry-run"
+  ], { raw: true, allowFailure: true });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Refusing to start local-command in forbidden cwd/);
+}));
+
 check("run codex-cli falls back to kimi-cli on rate limit", () => withTask((taskDir) => {
   const binDir = mkdtempSync(join(taskDir, "fake-bin-"));
   const sessionPath = join(taskDir, ".codex", "sessions", "fallback-codex-session.jsonl");
@@ -829,6 +856,28 @@ check("run takes over expired task lock and releases it", () => withTask((taskDi
     taskDir,
     "--worker", "local-command",
     "--command", "node -e \"process.stdin.resume(); console.log('stale lock cleared')\"",
+    "--timeout-seconds", "5"
+  ], { json: true });
+
+  assert.equal(result.decision, "run");
+  assert.equal(result.exitCode, 0);
+  assert.equal(existsSync(lockPath), false);
+}));
+
+check("run takes over expired task lock directory and releases it", () => withTask((taskDir) => {
+  const lockPath = join(taskDir, ".lth.lock");
+  mkdirSync(lockPath);
+  writeFileSync(join(lockPath, "lock.json"), JSON.stringify({
+    owner: "stale-dir-worker",
+    acquiredAt: new Date(Date.now() - 120_000).toISOString(),
+    expiresAt: new Date(Date.now() - 60_000).toISOString()
+  }, null, 2), "utf8");
+
+  const result = run([
+    "run",
+    taskDir,
+    "--worker", "local-command",
+    "--command", "node -e \"process.stdin.resume(); console.log('stale lock dir cleared')\"",
     "--timeout-seconds", "5"
   ], { json: true });
 

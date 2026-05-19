@@ -195,7 +195,7 @@ node src/cli.js run tasks/my-coding-task \
   --command "ollama run qwen2.5-coder:32b"
 ```
 
-`lth run` creates a short-lived `.lth.lock` file before starting a worker. If another worker already holds the lock, the command returns `decision: "wait"` and does not start a second worker. Expired locks are cleared automatically.
+`lth run` creates a short-lived `.lth.lock` lease before starting a worker. If another worker already holds the lock, the command returns `decision: "wait"` and does not start a second worker. Expired locks are retired and replaced automatically.
 
 Run one bounded worker slice with Codex CLI:
 
@@ -245,7 +245,7 @@ The smoke suite copies example tasks into temporary directories and verifies bot
 - schema validation rejects unsupported `schemaVersion` values and malformed evidence
 - `run --worker local-command` executes a bounded local command, captures output, and writes checkpoint state
 - failed local workers are classified and recorded
-- Codex workers default to `read-only` sandbox and reject forbidden working directories
+- Codex workers default to `read-only` sandbox, and all workers reject forbidden working directories
 - active task locks make `run` wait instead of starting overlapping workers
 - expired task locks are reclaimed and released after the run
 - `health` reports adapter readiness without making local CLI tools mandatory for tests
