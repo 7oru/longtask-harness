@@ -1,6 +1,6 @@
 # Roadmap
 
-See [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md) for the latest verified hardening review and priority order.
+See [docs/REVIEW_2026-05-19.md](docs/REVIEW_2026-05-19.md) for the latest runnable-tool review. See [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md) for the hardening review and priority order.
 
 ## 0.1 Contract
 
@@ -29,6 +29,8 @@ See [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md) for the latest verifi
 
 ## 0.4 Portfolio Polish
 
+- Reposition README around the runnable CLI loop: `install`, `init`, `run`, `status`, and `resume`.
+- Add `lth status` and `lth resume` as first-class user workflow commands.
 - Add diagrams and a live demo task.
-- Publish example case studies: coding refactor, PR review, video analysis. *(Initial local resume demo fixture exists.)*
+- Publish example case studies: React-to-TypeScript migration, coding refactor, PR review, video analysis. *(Initial local resume demo fixture exists.)*
 - Add GitHub Actions validation.

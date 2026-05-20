@@ -286,4 +286,4 @@ The harness can run a local command directly with `lth run --worker local-comman
 
 This is an early portfolio project scaffold. The near-term goal is to prove the harness contract with real coding tasks, then generalize to media workflows.
 
-The current hardening review is tracked in [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md). The first hardening passes add verified `done` claims, interruption-safe JSON writes and lock acquisition, safer Codex worker defaults, and schema-backed validation.
+The latest product review is tracked in [docs/REVIEW_2026-05-19.md](docs/REVIEW_2026-05-19.md): it focuses on moving the repo from protocol language to a runnable `lth init/run/status/resume` tool loop. The hardening review remains in [docs/REVIEW_PRIORITIES.md](docs/REVIEW_PRIORITIES.md), covering verified `done` claims, interruption-safe JSON writes and lock acquisition, safer Codex worker defaults, and schema-backed validation.
