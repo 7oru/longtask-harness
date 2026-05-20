@@ -73,6 +73,8 @@ harness 可以保存状态、分类失败并恢复工作，但任务定义仍然
 
 evidence item 也有一个小型共享结构。`type` 是必填字段；`path`、`criterionId`、`criteria`、`observedAt`、`source`、`command`、`exitCode`、`status`、`text`、`output`、`note` 和 `summary` 用来把原始证据连接到 success criteria。
 
+`checkpoint.evidence` 只保留最近 evidence 的 rolling window，默认最多 50 条。更旧的 evidence 会追加到 `evidence/checkpoint-evidence-archive.jsonl`，并在 `checkpoint.evidenceArchive` 里记录 archive 元数据；`lth verify` 会同时读取 archive 和当前窗口，所以旧 evidence 不会因为 checkpoint 变小而失效。
+
 ## 快速开始
 
 验证内置 examples：
@@ -208,6 +210,7 @@ smoke suite 会把 example task 复制到临时目录里测试，覆盖 happy pa
 - `run --worker local-command` 会运行一个本地 bounded worker slice、捕获输出并写 checkpoint state。
 - 失败的本地 worker 会被分类并记录。
 - Codex worker 默认使用 `read-only` sandbox；所有 worker 都会拒绝 forbidden working directory。
+- checkpoint evidence 会按 rolling window 截断，旧 evidence 会写入 archive，验证仍可读取。
 - active task lock 会让 `run` 等待，不会启动重叠 worker。
 - 过期 task lock 会被接管，并在 run 结束后释放。
 - `health` 会报告 adapter readiness，但测试不会强制本机必须安装所有 CLI。
@@ -285,6 +288,8 @@ Rate limit 时不应该把整段聊天全部塞进 checkpoint，而应该分层�
 - `evidence/handoff-*.md`：保存给下一个人或 AI worker 读的短摘要。
 - Codex session trace：当 `codex-cli` 遇到 rate limit 时，checkpoint 的 `evidence` 可以记录本地 `.codex/sessions/...jsonl` 路径，作为必要时深挖的原始轨迹。
 - `git diff`：对 coding task 来说，这是最真实的代码上下文；checkpoint 只解释它的意图和下一步。
+
+默认 `codex-cli` 使用 `--sandbox read-only`。在这个模式下，Codex 不被假设能自己写 `checkpoint.json`；它仍应在输出里留下足够的恢复信息，但持久化状态由 `lth run` 在 worker 退出后兜底完成：捕获 worker 输出、写 evidence、分类失败，并在 checkpoint 没有被 worker 更新时写入保守的下一步。
 
 ## OpenClaw 集成形态
 

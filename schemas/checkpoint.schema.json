@@ -80,6 +80,14 @@
         }
       }
     },
+    "evidenceArchive": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "archivedCount": { "type": "integer", "minimum": 0 },
+        "updatedAt": { "type": "string" }
+      }
+    },
     "workerCooldowns": {
       "type": "object",
       "additionalProperties": {

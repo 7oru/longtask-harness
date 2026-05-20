@@ -58,7 +58,7 @@ For `codex-cli` and `local-command` workers, the recipe generator emits a cron c
 
 Use `--lock-ttl-seconds` to tune the lease window. It should be longer than the expected worker timeout.
 
-Codex workers default to `--sandbox read-only`; `workspace-write` and `danger-full-access` require explicit task or CLI configuration. The harness blocks all workers from starting inside sensitive cwd patterns such as `~/.openclaw`.
+Codex workers default to `--sandbox read-only`; `workspace-write` and `danger-full-access` require explicit task or CLI configuration. In read-only mode, Codex is not expected to write `checkpoint.json` directly. The harness captures the worker output and writes the checkpoint fallback after the process exits if the checkpoint was unchanged. The harness blocks all workers from starting inside sensitive cwd patterns such as `~/.openclaw`.
 
 ## Worker Contract
 
@@ -101,6 +101,8 @@ The evidence item points to the raw trace:
 ```
 
 The checkpoint still owns only resumable state: blocker, `blockedUntil`, next step, active files, open questions, and evidence pointers.
+
+`checkpoint.evidence` is capped as a rolling window. The default is the newest 50 items inline; older evidence pointers move to `evidence/checkpoint-evidence-archive.jsonl`. `lth verify` reads archived and inline evidence together, while worker prompts only carry recent evidence.
 
 ## Kimi Fallback
 

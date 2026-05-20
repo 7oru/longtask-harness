@@ -111,6 +111,8 @@ The JSON files are schema-backed. `schemaVersion` must be `1`; newer versions sh
 
 Evidence items also have a small shared shape. `type` is required, while `path`, `criterionId`, `criteria`, `observedAt`, `source`, `command`, `exitCode`, `status`, `text`, `output`, `note`, and `summary` let workers connect raw evidence to success criteria.
 
+`checkpoint.evidence` is a rolling window of recent evidence, capped at 50 items by default. Older items are appended to `evidence/checkpoint-evidence-archive.jsonl` and summarized in `checkpoint.evidenceArchive`; `lth verify` reads both the archive and the current window.
+
 ## Quick Start
 
 Validate the included examples:
@@ -205,6 +207,8 @@ node src/cli.js run tasks/my-coding-task \
   --cwd /path/to/trusted/repo
 ```
 
+Codex CLI defaults to `--sandbox read-only`. In that mode, Codex is not expected to write `checkpoint.json` itself; `lth run` captures the worker output and writes the fallback checkpoint/evidence update after the process exits if the checkpoint was unchanged.
+
 Generate an OpenClaw cron recipe:
 
 ```bash
@@ -246,6 +250,7 @@ The smoke suite copies example tasks into temporary directories and verifies bot
 - `run --worker local-command` executes a bounded local command, captures output, and writes checkpoint state
 - failed local workers are classified and recorded
 - Codex workers default to `read-only` sandbox, and all workers reject forbidden working directories
+- checkpoint evidence rolls into an archive while verification still reads old evidence
 - active task locks make `run` wait instead of starting overlapping workers
 - expired task locks are reclaimed and released after the run
 - `health` reports adapter readiness without making local CLI tools mandatory for tests

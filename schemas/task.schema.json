@@ -106,6 +106,13 @@
         "fallbackOnRateLimit": { "type": "string" }
       }
     },
+    "evidencePolicy": {
+      "type": "object",
+      "properties": {
+        "checkpointWindow": { "type": "integer", "minimum": 1 },
+        "archivePath": { "type": "string" }
+      }
+    },
     "localWorker": {
       "type": "object",
       "properties": {

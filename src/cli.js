@@ -16,6 +16,8 @@ const VERSION = "0.2.0";
 const SUPPORTED_SCHEMA_VERSION = 1;
 const SCHEMA_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "schemas");
 const EVIDENCE_TYPES = ["test", "screenshot", "video-clip", "transcript", "benchmark", "review-note", "worker-output", "codex-session", "handoff", "artifact"];
+const DEFAULT_CHECKPOINT_EVIDENCE_LIMIT = 50;
+const DEFAULT_EVIDENCE_ARCHIVE_PATH = join("evidence", "checkpoint-evidence-archive.jsonl");
 
 function main(argv) {
   const [cmd, taskDirArg, ...rest] = argv;
@@ -559,12 +561,11 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
       finalCheckpoint.status = "paused";
       finalCheckpoint.lastCompletedStep = `Worker ${worker} completed one bounded slice.`;
       finalCheckpoint.nextStep = "Review worker output and choose the next bounded step.";
-      finalCheckpoint.evidence = Array.isArray(finalCheckpoint.evidence) ? finalCheckpoint.evidence : [];
-      finalCheckpoint.evidence.push({
+      appendCheckpointEvidence(taskDir, task, finalCheckpoint, [{
         type: "worker-output",
         path: outputPath,
         observedAt: finishedAt
-      });
+      }], finishedAt);
       finalCheckpoint.updatedAt = finishedAt;
       finalCheckpoint.blocker = null;
       finalCheckpoint.blockedUntil = null;
@@ -626,7 +627,7 @@ function runWorkerUnlocked(taskDir, args, task, checkpoint, dryRun) {
     }
     finalCheckpoint = readJson(join(taskDir, "checkpoint.json"));
     applyWorkerCooldown(finalCheckpoint, worker, classification, primaryFailureEvidence, finishedAt);
-    applyClassification(taskDir, finalCheckpoint, classification, combinedOutput, {
+    applyClassification(taskDir, task, finalCheckpoint, classification, combinedOutput, {
       evidence: primaryFailureEvidence,
       preserveNextStep: finalCheckpoint.updatedAt !== beforeUpdatedAt
     });
@@ -753,7 +754,7 @@ function recordEvidence(taskDir, args) {
   }
   writeJson(join(taskDir, manifestPath), manifest);
 
-  checkpoint.evidence = appendEvidenceItems(checkpoint.evidence, [checkpointEvidence]);
+  const evidenceUpdate = appendCheckpointEvidence(taskDir, task, checkpoint, [checkpointEvidence], now);
   checkpoint.updatedAt = now;
   writeJson(join(taskDir, "checkpoint.json"), checkpoint);
   appendRunEvent(taskDir, {
@@ -774,7 +775,8 @@ function recordEvidence(taskDir, args) {
     recorded: true,
     taskId: task.id,
     evidence: checkpointEvidence,
-    manifestPath
+    manifestPath,
+    evidenceArchive: evidenceUpdate.archivedCount ? checkpoint.evidenceArchive : undefined
   }, null, 2));
 }
 
@@ -831,7 +833,7 @@ function verifySuccessCriteria(taskDir, task, checkpoint, args = {}) {
 function verifyCriterion(taskDir, task, checkpoint, criterion, args) {
   if (criterion.metric === "command") return verifyCommandCriterion(taskDir, task, criterion, args);
   if (criterion.metric === "output_contains") return verifyOutputContainsCriterion(taskDir, checkpoint, criterion);
-  if (criterion.metric === "manual") return verifyManualCriterion(checkpoint, criterion);
+  if (criterion.metric === "manual") return verifyManualCriterion(taskDir, checkpoint, criterion);
   return {
     id: criterion.id,
     metric: criterion.metric,
@@ -901,8 +903,8 @@ function verifyOutputContainsCriterion(taskDir, checkpoint, criterion) {
   };
 }
 
-function verifyManualCriterion(checkpoint, criterion) {
-  const evidence = Array.isArray(checkpoint.evidence) ? checkpoint.evidence : [];
+function verifyManualCriterion(taskDir, checkpoint, criterion) {
+  const evidence = allCheckpointEvidence(taskDir, checkpoint);
   const match = evidence.find((item) => evidenceMatchesCriterion(item, criterion));
   return {
     id: criterion.id,
@@ -922,7 +924,7 @@ function expectedOutputNeedles(target) {
 }
 
 function evidenceTextsForCriterion(taskDir, checkpoint, target) {
-  const evidence = Array.isArray(checkpoint.evidence) ? checkpoint.evidence : [];
+  const evidence = allCheckpointEvidence(taskDir, checkpoint);
   const explicitPaths = typeof target === "object" && target?.path
     ? [target.path]
     : [];
@@ -973,7 +975,7 @@ function classifyCommand(taskDir, args) {
   });
 
   if (args.record) {
-    applyClassification(taskDir, checkpoint, result, text, {
+    applyClassification(taskDir, task, checkpoint, result, text, {
       evidence: codexSessionEvidenceForFailure({
         worker: result.source === "codex-cli" ? "codex-cli" : result.source,
         task,
@@ -1023,7 +1025,9 @@ function summarizeRuns(taskDir, args = {}) {
     nextStep: checkpoint.nextStep,
     blockedUntil: checkpoint.blockedUntil,
     blocker: checkpoint.blocker,
-    evidenceCount: Array.isArray(checkpoint.evidence) ? checkpoint.evidence.length : 0,
+    evidenceCount: allCheckpointEvidence(taskDir, checkpoint).length,
+    checkpointEvidenceCount: Array.isArray(checkpoint.evidence) ? checkpoint.evidence.length : 0,
+    archivedEvidenceCount: Number(checkpoint.evidenceArchive?.archivedCount || 0),
     totalEvents: events.length,
     eventCounts,
     workerCounts,
@@ -1194,7 +1198,7 @@ function readClassifierInput(args) {
   fail("classify requires --text or --file.");
 }
 
-function applyClassification(taskDir, checkpoint, result, text, opts = {}) {
+function applyClassification(taskDir, task, checkpoint, result, text, opts = {}) {
   const now = new Date().toISOString();
   const evidence = normalizeEvidence(opts.evidence, now);
   checkpoint.status = result.statusSuggestion;
@@ -1212,7 +1216,7 @@ function applyClassification(taskDir, checkpoint, result, text, opts = {}) {
     requiresHuman: result.statusSuggestion === "needs-human"
   };
   if (evidence.length) {
-    checkpoint.evidence = appendEvidenceItems(checkpoint.evidence, evidence);
+    appendCheckpointEvidence(taskDir, task, checkpoint, evidence, now);
   }
   writeJson(join(taskDir, "checkpoint.json"), checkpoint);
   appendRunEvent(taskDir, {
@@ -1387,7 +1391,7 @@ function executeFallbackWorker({
     ];
     applyWorkerCooldown(checkpoint, primaryWorker, primaryClassification, primaryEvidence, fallbackFinishedAt);
     const beforeEvidenceLength = Array.isArray(checkpoint.evidence) ? checkpoint.evidence.length : 0;
-    checkpoint.evidence = appendEvidenceItems(checkpoint.evidence, evidenceItems);
+    const evidenceUpdate = appendCheckpointEvidence(taskDir, task, checkpoint, evidenceItems, fallbackFinishedAt);
     if (checkpoint.updatedAt === beforeUpdatedAt) {
       checkpoint.status = "paused";
       checkpoint.lastCompletedStep = `Fallback worker ${worker} completed one bounded slice after Codex CLI rate limit.`;
@@ -1402,7 +1406,7 @@ function executeFallbackWorker({
         reason: "fallback worker completed without checkpoint update",
         at: fallbackFinishedAt
       });
-    } else if (checkpoint.evidence.length > beforeEvidenceLength) {
+    } else if (evidenceUpdate.addedCount || evidenceUpdate.archivedCount || checkpoint.evidence.length > beforeEvidenceLength) {
       checkpoint.updatedAt = fallbackFinishedAt;
       writeJson(join(taskDir, "checkpoint.json"), checkpoint);
       appendRunEvent(taskDir, {
@@ -1425,7 +1429,7 @@ function executeFallbackWorker({
     if (classification.class === "rate_limit") {
       classification = mergeRateLimitClassificationFromCooldowns(classification, checkpoint.workerCooldowns);
     }
-    applyClassification(taskDir, checkpoint, classification, combinedOutput, {
+    applyClassification(taskDir, task, checkpoint, classification, combinedOutput, {
       evidence: [...primaryEvidence, fallbackOutputEvidence],
       preserveNextStep: checkpoint.updatedAt !== beforeUpdatedAt
     });
@@ -1792,17 +1796,122 @@ function normalizeEvidence(value, observedAt) {
     .map((item) => ({ observedAt, ...item }));
 }
 
+function appendCheckpointEvidence(taskDir, task, checkpoint, items, archivedAt = new Date().toISOString()) {
+  const beforeLength = Array.isArray(checkpoint.evidence) ? checkpoint.evidence.length : 0;
+  checkpoint.evidence = appendEvidenceItems(checkpoint.evidence, items);
+  const afterAppendLength = checkpoint.evidence.length;
+  const archiveUpdate = rollCheckpointEvidence(taskDir, task, checkpoint, archivedAt);
+  return {
+    addedCount: Math.max(0, afterAppendLength - beforeLength),
+    archivedCount: archiveUpdate.archivedCount,
+    archivePath: archiveUpdate.archivePath
+  };
+}
+
+function rollCheckpointEvidence(taskDir, task, checkpoint, archivedAt) {
+  const evidence = Array.isArray(checkpoint.evidence) ? checkpoint.evidence : [];
+  const limit = checkpointEvidenceLimit(task);
+  if (evidence.length <= limit) return { archivedCount: 0, archivePath: null };
+
+  const overflowCount = evidence.length - limit;
+  const archivedItems = evidence.splice(0, overflowCount);
+  const archivePath = checkpointEvidenceArchivePath(task);
+  const fullPath = resolveTaskRelativePath(taskDir, archivePath, "evidence archive path");
+  const priorCount = Number.isFinite(Number(checkpoint.evidenceArchive?.archivedCount))
+    ? Number(checkpoint.evidenceArchive.archivedCount)
+    : countJsonlLines(fullPath);
+  appendEvidenceArchive(fullPath, checkpoint.taskId, archivedItems, archivedAt);
+  checkpoint.evidenceArchive = {
+    path: archivePath,
+    archivedCount: priorCount + archivedItems.length,
+    updatedAt: archivedAt
+  };
+  return { archivedCount: archivedItems.length, archivePath };
+}
+
+function appendEvidenceArchive(fullPath, taskId, items, archivedAt) {
+  mkdirSync(dirname(fullPath), { recursive: true });
+  const text = items.map((item) => JSON.stringify({
+    schemaVersion: SUPPORTED_SCHEMA_VERSION,
+    taskId,
+    archivedAt,
+    evidence: item
+  })).join("\n") + "\n";
+  appendFileSync(fullPath, text, "utf8");
+}
+
+function allCheckpointEvidence(taskDir, checkpoint) {
+  return [
+    ...readArchivedCheckpointEvidence(taskDir, checkpoint),
+    ...(Array.isArray(checkpoint.evidence) ? checkpoint.evidence : [])
+  ];
+}
+
+function readArchivedCheckpointEvidence(taskDir, checkpoint) {
+  const archivePath = checkpoint.evidenceArchive?.path || DEFAULT_EVIDENCE_ARCHIVE_PATH;
+  const fullPath = resolveTaskRelativePath(taskDir, archivePath, "evidence archive path");
+  if (!existsSync(fullPath)) return [];
+  return readFileSync(fullPath, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line, index) => {
+      try {
+        const entry = JSON.parse(line);
+        return entry.evidence ? [entry.evidence] : [];
+      } catch (error) {
+        fail(`Cannot parse evidence archive ${fullPath}:${index + 1}: ${error.message}`);
+      }
+    });
+}
+
 function appendEvidenceItems(existing, items) {
   const evidence = Array.isArray(existing) ? existing : [];
-  const seen = new Set(evidence.map((item) => `${item.type || ""}:${item.path || ""}`));
+  const seen = new Set(evidence.map(evidenceIdentity));
   for (const item of items) {
-    const key = `${item.type || ""}:${item.path || ""}`;
+    const key = evidenceIdentity(item);
     if (!seen.has(key)) {
       evidence.push(item);
       seen.add(key);
     }
   }
   return evidence;
+}
+
+function evidenceIdentity(item) {
+  return [
+    item.type || "",
+    item.path || "",
+    item.manifestPath || "",
+    item.criterionId || item.criterion || "",
+    item.observedAt || "",
+    item.summary || item.note || ""
+  ].join(":");
+}
+
+function checkpointEvidenceLimit(task) {
+  const limit = Number(task?.evidencePolicy?.checkpointWindow || DEFAULT_CHECKPOINT_EVIDENCE_LIMIT);
+  return Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_CHECKPOINT_EVIDENCE_LIMIT;
+}
+
+function checkpointEvidenceArchivePath(task) {
+  return task?.evidencePolicy?.archivePath
+    ? String(task.evidencePolicy.archivePath)
+    : DEFAULT_EVIDENCE_ARCHIVE_PATH;
+}
+
+function resolveTaskRelativePath(taskDir, relativePath, label) {
+  const resolvedTaskDir = resolve(taskDir);
+  const resolvedPath = resolve(resolvedTaskDir, relativePath);
+  if (resolvedPath !== resolvedTaskDir && !resolvedPath.startsWith(`${resolvedTaskDir}/`)) {
+    fail(`${label} must stay inside the task directory: ${relativePath}`);
+  }
+  return resolvedPath;
+}
+
+function countJsonlLines(path) {
+  if (!existsSync(path)) return 0;
+  const text = readFileSync(path, "utf8").trim();
+  return text ? text.split(/\r?\n/).length : 0;
 }
 
 function expandHome(path) {

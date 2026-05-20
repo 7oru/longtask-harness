@@ -443,6 +443,52 @@ check("evidence records a manifest and satisfies manual criteria", () => withTas
   assert.equal(run(["verify", taskDir], { json: true }).status, "pass");
 }));
 
+check("checkpoint evidence rolls into an archive without losing verification", () => withTask((taskDir) => {
+  const taskPath = join(taskDir, "task.json");
+  const task = JSON.parse(readFileSync(taskPath, "utf8"));
+  task.evidencePolicy = { checkpointWindow: 2 };
+  task.successCriteria = [{
+    id: "old-review",
+    description: "Archived evidence can still satisfy manual verification.",
+    metric: "manual"
+  }];
+  writeFileSync(taskPath, JSON.stringify(task, null, 2) + "\n", "utf8");
+
+  run([
+    "evidence",
+    taskDir,
+    "--type", "review-note",
+    "--criterion-id", "old-review",
+    "--summary", "Old review that should roll out of checkpoint.",
+    "--status", "pass"
+  ], { json: true });
+  run([
+    "evidence",
+    taskDir,
+    "--type", "review-note",
+    "--summary", "Second review.",
+    "--status", "pass"
+  ], { json: true });
+  run([
+    "evidence",
+    taskDir,
+    "--type", "review-note",
+    "--summary", "Third review.",
+    "--status", "pass"
+  ], { json: true });
+
+  const checkpoint = readCheckpoint(taskDir);
+  const archivePath = join(taskDir, "evidence", "checkpoint-evidence-archive.jsonl");
+  const archived = readFileSync(archivePath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+
+  assert.equal(checkpoint.evidence.length, 2);
+  assert.equal(checkpoint.evidenceArchive.path, "evidence/checkpoint-evidence-archive.jsonl");
+  assert.equal(checkpoint.evidenceArchive.archivedCount, 1);
+  assert.equal(archived.length, 1);
+  assert.equal(archived[0].evidence.criterionId, "old-review");
+  assert.equal(run(["verify", taskDir], { json: true }).status, "pass");
+}));
+
 check("evidence rejects unsupported types", () => withTask((taskDir) => {
   const result = run([
     "evidence",
